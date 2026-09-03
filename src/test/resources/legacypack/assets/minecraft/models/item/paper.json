@@ -1,0 +1,9 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": { "layer0": "minecraft:item/paper" },
+  "overrides": [
+    { "predicate": { "custom_model_data": 1 }, "model": "myserver:item/scroll" },
+    { "predicate": { "custom_model_data": 2 }, "model": "myserver:item/map_fragment" },
+    { "predicate": { "custom_model_data": 3, "lefthanded": 1 }, "model": "myserver:item/left_scroll" }
+  ]
+}

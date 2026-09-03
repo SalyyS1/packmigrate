@@ -1,0 +1,135 @@
+packmigrate
+Copyright 2026 SalyVn (https://github.com/SalyyS1)
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file.
+
+================================================================================
+Third-party dependencies bundled in the shaded release jar
+================================================================================
+
+Licences below were read from each artifact's published POM on Maven Central.
+
+  Clikt 5.1.0                             Apache-2.0
+  com.github.ajalt.clikt:clikt            https://github.com/ajalt/clikt
+                                          The command line only.
+
+  kotlinx.serialization 1.11.0            Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-serialization-json
+                                          https://github.com/Kotlin/kotlinx.serialization
+                                          Used to read legacy model files, which
+                                          are other people's JSON and may contain
+                                          anything. Files this tool writes go
+                                          through its own emitter so that key
+                                          order, indentation and escaping are
+                                          fixed rather than incidental.
+
+  Kotlin standard library 2.4.10          Apache-2.0
+  org.jetbrains.kotlin:kotlin-stdlib      https://kotlinlang.org
+
+Nothing else is bundled. No Mojang assets are included; the list in
+vanilla-item-models.txt is model paths, which are file names.
+
+================================================================================
+Where the facts come from
+================================================================================
+
+Every rule this tool depends on was checked against a primary source. Where a
+community source disagreed with the game, the game won.
+
+  The selection rule for both formats. A legacy overrides list is scanned in
+  order and the last entry whose every predicate satisfies `value >= threshold`
+  wins; a range_dispatch selects the entry with the largest threshold that is
+  `<= value`, and falls back when none is. The second is stated in the item
+  model definition documentation on minecraft.wiki and is observable in every
+  vanilla definition that uses it.
+
+  Which modern property each legacy predicate corresponds to, and the units.
+  Taken from the vanilla 26.3 definition of the item that used the predicate, as
+  published by misode/mcmeta (https://github.com/misode/mcmeta, assets branch),
+  compared against the 1.21.3 model file it replaced (the 1.21.3-assets tag of
+  the same repository). Those two files are the same migration this tool
+  performs, done by the people who wrote the format:
+
+    bow.json           using_item, then use_duration with scale 0.05 and the
+                       legacy thresholds 0.65 and 0.9 unchanged
+    crossbow.json      charge_type select with cases arrow and rocket, whose
+                       fallback is using_item over crossbow/pull with the legacy
+                       thresholds 0.58 and 1.0 unchanged
+    compass.json       has_component on minecraft:lodestone_tracker, with the
+                       same entries under target lodestone and target spawn
+    recovery_compass.json   one dispatch with target recovery
+    clock.json         context_dimension select, source daytime in the
+                       overworld and source random outside it
+    brush.json         use_cycle with period 10 and scale 0.1, keeping the
+                       legacy thresholds 0.25, 0.5 and 0.75
+    light.json         block_state select on the level property, cases 0..15,
+                       with the level-15 model as the fallback
+    beehive.json       block_state select on honey_level
+    elytra.json        condition on minecraft:broken
+    diamond_chestplate.json and the other trimmed armour
+                       trim_material select naming each material
+
+  The trim material indexes (quartz 0.1 through amethyst 1.0) are the
+  item_model_index values of the vanilla trim_material registry as it stood in
+  1.21.3, which is what the legacy trim_type predicate returned.
+
+  minecraft:bundle/fullness returning the weight of the bundle_contents
+  component, minecraft:use_cycle returning the remaining use ticks modulo
+  period, and range_dispatch's scale being applied to the property value before
+  thresholds are compared, come from the item model definition documentation on
+  minecraft.wiki (https://minecraft.wiki/w/Items_model_definition). No vanilla
+  definition uses bundle/fullness, so there is no file to check it against.
+
+  That a legacy integer CustomModelData arrives in floats[0] of the modern
+  component, which is why the emitted dispatch needs no index field, is the
+  behaviour of the game's own data fixer for that component.
+
+  The pack.mcmeta rules — the format-64 boundary between the supported_formats
+  era and the min_format/max_format era, both new fields being required
+  together, supported_formats being rejected above 64, and pack_format needing
+  to be at least 15 in a multi-version pack — come from the pack metadata codec
+  in the client, via a publicly available decompilation used as read-only
+  evidence. No decompiled code is reproduced here.
+
+  The version-to-format table in PackFormats.kt lists releases only and was
+  derived from the version summary published by misode/mcmeta, which mirrors
+  Mojang's version manifest. The numbers are facts about the game.
+
+================================================================================
+Prior art
+================================================================================
+
+None of these projects' code is used.
+
+  misode/mcmeta                 no licence file — treated as read-only reference
+                                https://github.com/misode/mcmeta
+                                The vanilla assets of every version as plain
+                                directories. The reason this tool could be
+                                checked against Mojang's own migration of each
+                                item instead of against guesswork.
+
+  Misode's generators           https://misode.github.io
+                                Browser generators for data and asset files,
+                                including item model definitions. The right tool
+                                for writing one definition by hand; this one is
+                                for a pack that already has three hundred.
+
+  ComunidadAylas/PackSquash     AGPL-3.0      https://github.com/ComunidadAylas/PackSquash
+                                Pack optimisation, done properly. Run it after
+                                this, as a separate program.
+
+  unnamed/creative              MIT           https://github.com/unnamed/creative
+                                A resource pack object model and serialiser for
+                                the JVM. The right dependency if you are doing
+                                this inside a plugin.
+
+  Oraxen, Nexo, ItemsAdder      Various, some closed or source-available with
+                                restrictions. Each generates packs of the kind
+                                this tool reads and each has its own migration
+                                for its own configuration files. No code from any
+                                of them is present, and none of their config
+                                formats is read or written.
+
+Minecraft is a trademark of Mojang Synergies AB. packmigrate is an independent
+project and is not affiliated with, endorsed by or sponsored by Mojang or
+Microsoft.

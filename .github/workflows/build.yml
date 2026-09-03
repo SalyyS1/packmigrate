@@ -1,0 +1,107 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Test and build
+        run: ./gradlew build --no-daemon
+
+      - name: The CLI runs and describes itself
+        run: |
+          set -euo pipefail
+          java -jar build/libs/packmigrate.jar --version
+          java -jar build/libs/packmigrate.jar --help
+
+      # The fixture pack is the one legacy file shape this tool exists for: a bow whose overrides mix
+      # custom_model_data with pulling and pull, a compass on angle, a paper on lefthanded, and one
+      # reference to a model that is not in the pack.
+      - name: the fixture pack converts
+        run: |
+          set -euo pipefail
+          cp -r src/test/resources/legacypack /tmp/pack
+          set +e
+          java -jar build/libs/packmigrate.jar /tmp/pack --write > /tmp/out.txt 2>&1
+          code=$?
+          set -e
+          cat /tmp/out.txt
+          # The missing myserver:item/void_sword is a real fault in the fixture, so exit 1 is correct.
+          test "$code" = "1" || { echo "expected exit code 1, got $code"; exit 1; }
+          grep -q "void_sword" /tmp/out.txt
+          test -f /tmp/pack/assets/minecraft/items/bow.json
+          test -f /tmp/pack/assets/minecraft/items/compass.json
+          test -f /tmp/pack/assets/minecraft/items/paper.json
+
+      - name: the bow definition has the shape vanilla uses
+        run: |
+          set -euo pipefail
+          BOW=/tmp/pack/assets/minecraft/items/bow.json
+          # One condition on using_item, with the pull range inside it rather than beside it.
+          jq -e '.model.fallback.type == "minecraft:condition"' $BOW
+          jq -e '.model.fallback.property == "minecraft:using_item"' $BOW
+          jq -e '.model.fallback.on_true.property == "minecraft:use_duration"' $BOW
+          jq -e '.model.fallback.on_true.scale == 0.05' $BOW
+          jq -e '[.model.fallback.on_true.entries[].threshold] == [0.65, 0.9]' $BOW
+          jq -e '.model.fallback.on_true.fallback.model == "minecraft:item/bow_pulling_0"' $BOW
+
+      - name: the compass definition aims where the legacy predicate aimed
+        run: |
+          set -euo pipefail
+          C=/tmp/pack/assets/minecraft/items/compass.json
+          jq -e '.model.property == "minecraft:has_component"' $C
+          jq -e '.model.component == "minecraft:lodestone_tracker"' $C
+          jq -e '.model.on_true.target == "lodestone"' $C
+          jq -e '.model.on_false.target == "spawn"' $C
+
+      - name: a custom_model_data value that needs a second predicate falls back the way it used to
+        run: |
+          set -euo pipefail
+          P=/tmp/pack/assets/minecraft/items/paper.json
+          jq -e '.model.property == "minecraft:custom_model_data"' $P
+          jq -e '[.model.entries[].threshold] == [1, 2, 3]' $P
+          jq -e '.model.entries[2].model.property == "minecraft:main_hand"' $P
+          jq -e '.model.entries[2].model.cases[0].when == "left"' $P
+          # Right-handed at value 3 showed the value-2 model before, and still does.
+          jq -e '.model.entries[2].model.fallback.model == "myserver:item/map_fragment"' $P
+
+      - name: pack mcmeta satisfies both eras of the format rules
+        run: |
+          set -euo pipefail
+          M=/tmp/pack/pack.mcmeta
+          jq -e '.pack.pack_format == 46' $M
+          jq -e '.pack.supported_formats == [46, 64]' $M
+          jq -e '.pack.min_format == 46' $M
+          jq -e '.pack.max_format >= 88' $M
+          jq -e '.pack.description == "myserver \"custom\" items"' $M
+
+      - name: a second run over the converted pack changes nothing
+        run: |
+          set -euo pipefail
+          cp -r /tmp/pack /tmp/pack-again
+          set +e
+          java -jar build/libs/packmigrate.jar /tmp/pack-again --write > /tmp/again.txt 2>&1
+          set -e
+          cat /tmp/again.txt
+          # The definitions it would overwrite are the ones it wrote, so the output has to be identical.
+          diff -r /tmp/pack /tmp/pack-again
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: packmigrate-jar
+          path: build/libs/packmigrate.jar
+          if-no-files-found: error
