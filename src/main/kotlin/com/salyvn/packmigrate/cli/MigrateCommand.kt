@@ -101,8 +101,9 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
             fail("$zipTarget already exists. Pass --force to overwrite it.")
         }
 
+        val writeInPlace = write && !isZipInput && out == null
         val tempExtracted = if (isZipInput) Files.createTempDirectory("packmigrate-in-") else null
-        val tempStaged = if (applying && out == null && zipTarget != null) {
+        val tempStaged = if (applying && !writeInPlace && out == null && zipTarget != null) {
             Files.createTempDirectory("packmigrate-out-")
         } else {
             null
