@@ -37,6 +37,7 @@ object PackFormats {
         "26.1.1" to 84,
         "26.1.2" to 84,
         "26.2" to 88,
+        "26.3" to 97,
     )
 
     val newestRelease: String = RELEASES.keys.last()
@@ -63,6 +64,13 @@ object PackFormats {
     private fun parseOne(text: String): PackFormat {
         if (text.isEmpty()) throw IllegalArgumentException("A version range cannot have an empty end")
         RELEASES[text]?.let { return PackFormat(it) }
+        if (text.startsWith("[") && text.endsWith("]")) {
+            val parts = text.substring(1, text.length - 1).split(",").map { it.trim() }
+            if (parts.size in 1..2 && parts.all { it.toIntOrNull() != null }) {
+                return PackFormat(parts[0].toInt(), parts.getOrNull(1)?.toInt())
+            }
+            throw IllegalArgumentException("'$text' is not a valid [major, minor] pack format tuple")
+        }
         // A number is a pack format, not a version: `88` and `97.1` are formats, `1.21.4` is a version.
         val numeric = text.split(".")
         if (numeric.size <= 2 && numeric.all { part -> part.toIntOrNull() != null }) {

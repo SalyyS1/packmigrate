@@ -5,11 +5,33 @@ import com.salyvn.packmigrate.legacy.ModelId
 import com.salyvn.packmigrate.legacy.Override
 import com.salyvn.packmigrate.modern.ItemModelDefinition
 import com.salyvn.packmigrate.modern.ItemModelNode
+import kotlin.math.floor
 
 enum class IssueLevel { ERROR, WARNING, NOTE }
 
-/** Something the migration could not do exactly, or did differently, with the item and override it is about. */
-data class Issue(val level: IssueLevel, val item: String, val overrideIndex: Int?, val message: String)
+/** Something the migration could not do exactly, or did differently, with its SARIF rule and artifact path. */
+data class Issue(
+    val level: IssueLevel,
+    val item: String,
+    val overrideIndex: Int?,
+    val message: String,
+    val rule: MigrationRule = defaultRule(level),
+    val path: String = defaultPath(item),
+) {
+    companion object {
+        private fun defaultRule(level: IssueLevel): MigrationRule = when (level) {
+            IssueLevel.ERROR -> MigrationRule.PM001
+            IssueLevel.WARNING -> MigrationRule.PM004
+            IssueLevel.NOTE -> MigrationRule.PM007
+        }
+
+        fun defaultPath(item: String): String = when {
+            item == "pack.mcmeta" -> "pack.mcmeta"
+            item.endsWith(".json") -> item
+            else -> ModelId.parse(item).relativeFile
+        }
+    }
+}
 
 /** The outcome for one legacy file: a definition, or nothing, and what was said about it. */
 data class Conversion(
@@ -20,69 +42,103 @@ data class Conversion(
     val referencedModels: List<ModelId>,
     /** Legacy custom_model_data values this item claims, for the collision check. */
     val customModelDataValues: List<Int>,
+    /** Non-null when the legacy model came from an overlay directory rather than the pack root. */
+    val sourceOverlay: String? = null,
+    /** Pack-relative path of the source legacy model JSON. */
+    val sourcePath: String = ModelId.parse(item).relativeFile,
 )
 
 /**
  * Turns one legacy item model's `overrides` into an item model definition.
- *
- * The two formats agree on the one thing that matters. A legacy override list is scanned in order and the
- * last entry whose predicates are all satisfied (`>=`) wins, which is why authors list `custom_model_data`
- * ascending. A `range_dispatch` picks the entry with the largest `threshold` that is `<=` the value. For
- * overrides keyed on one numeric predicate the two rules select the same model for every input, so an
- * integer `custom_model_data: N` becomes `threshold: N` and nothing else changes.
- *
- * Everything past that simple case is [PredicateTreeBuilder]'s job: it rebuilds the legacy rule as a tree
- * instead of matching known file shapes. This object is the part around it — refusing predicate names the
- * legacy format never had, reporting what a reader would want to know, and collecting the model references
- * the pack has to contain for the result to render.
  */
 object Converter {
 
-    fun convert(legacy: LegacyItemModel): Conversion {
+    fun convert(legacy: LegacyItemModel, sourceOverlay: String? = null): Conversion {
         val issues = mutableListOf<Issue>()
         val item = legacy.selfModel
+        val baseRel = ModelId.parse(item).relativeFile
+        val sourcePath = if (sourceOverlay != null) "$sourceOverlay/$baseRel" else baseRel
 
         if (!legacy.hasOverrides) {
-            return Conversion(item, null, issues, emptyList(), emptyList())
+            return Conversion(item, null, issues, emptyList(), emptyList(), sourceOverlay, sourcePath)
         }
 
         val unknown = legacy.overrides.flatMap { it.predicate.keys }.filter { PredicateMapping.of(it) == null }.distinct()
         unknown.forEach { name ->
-            issues += Issue(IssueLevel.ERROR, item, null, "Predicate '$name' is not one the legacy format defined; the override using it cannot be migrated.")
+            issues += Issue(
+                level = IssueLevel.ERROR,
+                item = item,
+                overrideIndex = null,
+                message = "Predicate '$name' is not one the legacy format defined; the override using it cannot be migrated.",
+                rule = MigrationRule.PM002,
+                path = sourcePath,
+            )
         }
 
         val usable = legacy.overrides.filter { override -> override.predicate.keys.all { PredicateMapping.of(it) != null } }
-        reportShadowedValues(usable, item, issues)
+        reportNonIntegerOrNegativeCmd(usable, item, sourcePath, issues)
+        reportShadowedValues(usable, item, sourcePath, issues)
 
-        // The item's own model is what the tree falls back to, the way an item with no matching override
-        // used to render the file it was written in.
-        val builder = PredicateTreeBuilder(legacy.item.substringAfterLast('/'), item, issues)
+        val builder = PredicateTreeBuilder(legacy.item.substringAfterLast('/'), item, sourcePath, issues)
         val candidates = usable.map { Candidate(it.index, ModelId.parse(it.model).qualified, it.predicate) }
         val root = builder.build(candidates, ItemModelNode.Model(legacy.selfModel))
 
         val referenced = usable.map { ModelId.parse(it.model) } + ModelId.parse(legacy.selfModel)
+        val integerCmdValues = usable.mapNotNull { ov ->
+            val raw = ov.predicate["custom_model_data"] ?: return@mapNotNull null
+            if (raw >= 0.0 && raw == floor(raw)) raw.toInt() else null
+        }.distinct()
+
         return Conversion(
             item = item,
             definition = ItemModelDefinition(root),
             issues = issues,
             referencedModels = referenced.distinct(),
-            customModelDataValues = usable.mapNotNull { it.customModelData }.distinct(),
+            customModelDataValues = integerCmdValues,
+            sourceOverlay = sourceOverlay,
+            sourcePath = sourcePath,
         )
     }
 
-    /**
-     * A `custom_model_data` value claimed twice with no other predicate only ever showed the later model.
-     * The definition keeps that, and says so, because the dead entry is usually a copy-paste the author
-     * still believes in.
-     */
-    private fun reportShadowedValues(usable: List<Override>, item: String, issues: MutableList<Issue>) {
+    private fun reportNonIntegerOrNegativeCmd(
+        usable: List<Override>,
+        item: String,
+        sourcePath: String,
+        issues: MutableList<Issue>,
+    ) {
+        usable.forEach { ov ->
+            val raw = ov.predicate["custom_model_data"] ?: return@forEach
+            if (raw < 0.0 || raw != floor(raw)) {
+                issues += Issue(
+                    level = IssueLevel.WARNING,
+                    item = item,
+                    overrideIndex = ov.index,
+                    message = "custom_model_data $raw is negative or fractional; Minecraft's item data fixer writes integer CustomModelData tags to floats[0].",
+                    rule = MigrationRule.PM011,
+                    path = sourcePath,
+                )
+            }
+        }
+    }
+
+    private fun reportShadowedValues(
+        usable: List<Override>,
+        item: String,
+        sourcePath: String,
+        issues: MutableList<Issue>,
+    ) {
         usable.filter { it.customModelData != null && it.otherPredicates.isEmpty() }
-            .groupBy { it.customModelData!! }
+            .groupBy { it.predicate["custom_model_data"]!! }
             .filterValues { it.size > 1 }
             .forEach { (value, declarations) ->
+                val formatted = if (value == floor(value)) value.toInt().toString() else value.toString()
                 issues += Issue(
-                    IssueLevel.WARNING, item, declarations.last().index,
-                    "custom_model_data $value is declared ${declarations.size} times with no other predicate; the last one (${declarations.last().model}) wins, as it did before.",
+                    level = IssueLevel.WARNING,
+                    item = item,
+                    overrideIndex = declarations.last().index,
+                    message = "custom_model_data $formatted is declared ${declarations.size} times with no other predicate; the last one (${declarations.last().model}) wins, as it did before.",
+                    rule = MigrationRule.PM004,
+                    path = sourcePath,
                 )
             }
     }

@@ -10,14 +10,17 @@ import java.nio.file.Path
 @Serializable
 data class MigratedItemJson(
     val item: String,
+    val sourcePath: String,
     val customModelDataValues: List<Int>,
     val referencedModels: List<String>,
 )
 
 @Serializable
 data class MigrationIssueJson(
+    val ruleId: String,
     val level: String,
     val item: String,
+    val path: String,
     val overrideIndex: Int? = null,
     val message: String,
 )
@@ -27,6 +30,7 @@ data class MigrationReportPayload(
     val pack: String,
     val applied: Boolean,
     val outputDir: String? = null,
+    val overlayItemsDir: String? = null,
     val zipPath: String? = null,
     val zipSha1: String? = null,
     val zipSha256: String? = null,
@@ -57,11 +61,13 @@ object JsonMigrationReport {
         applied: Boolean,
         outputDir: Path?,
         zipArtifact: ZipArtifact?,
+        overlayItemsDir: String? = null,
     ): String {
         val payload = MigrationReportPayload(
             pack = pack.toString(),
             applied = applied,
             outputDir = outputDir?.toString(),
+            overlayItemsDir = overlayItemsDir,
             zipPath = zipArtifact?.path?.toString(),
             zipSha1 = zipArtifact?.sha1,
             zipSha256 = zipArtifact?.sha256,
@@ -78,14 +84,17 @@ object JsonMigrationReport {
                 .map { conv ->
                     MigratedItemJson(
                         item = conv.item,
+                        sourcePath = conv.sourcePath,
                         customModelDataValues = conv.customModelDataValues.sorted(),
                         referencedModels = conv.referencedModels.map { it.qualified },
                     )
                 },
             issues = plan.issues.map { issue ->
                 MigrationIssueJson(
+                    ruleId = issue.rule.id,
                     level = issue.level.name.lowercase(),
                     item = issue.item,
+                    path = issue.path,
                     overrideIndex = issue.overrideIndex,
                     message = issue.message,
                 )

@@ -1,24 +1,26 @@
 package com.salyvn.packmigrate.migrate
 
+import com.github.ajalt.clikt.core.ProgramResult
+import com.github.ajalt.clikt.core.parse
+import com.salyvn.packmigrate.cli.MigrateCommand
+import com.salyvn.packmigrate.core.PackFormat
 import com.salyvn.packmigrate.core.PackFormats
 import com.salyvn.packmigrate.core.VanillaModels
 import com.salyvn.packmigrate.core.ZipPacks
-import com.salyvn.packmigrate.cli.MigrateCommand
-import com.github.ajalt.clikt.core.ProgramResult
-import com.github.ajalt.clikt.core.parse
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.io.path.exists
 import kotlin.io.path.readText
-import org.junit.jupiter.api.Test
 
-/** The fixture under `src/test/resources/legacypack` run end to end, the way the CLI runs it. */
 class PackMigrationTest {
 
     private fun plan(stripOverrides: Boolean = false): MigrationPlan {
@@ -48,6 +50,7 @@ class PackMigrationTest {
     fun `the missing void_sword model is the only error`() {
         val errors = plan().issues.filter { it.level == IssueLevel.ERROR }
         assertEquals(1, errors.size)
+        assertEquals(MigrationRule.PM003, errors.single().rule)
         assertTrue("myserver:item/void_sword" in errors.single().message)
     }
 
@@ -59,15 +62,13 @@ class PackMigrationTest {
     }
 
     @Test
-    fun `pack mcmeta carries the old description and both era fields`() {
+    fun `pack mcmeta carries the old description and both era fields up to 26_3`() {
         val meta = plan().files.single { it.relative == "pack.mcmeta" }.text
-        // The description survives the rewrite, escaped quotes included.
         assertTrue("\"description\": \"myserver \\\"custom\\\" items\"" in meta)
-        // 46 (1.21.4) is below the minor-version era, so all four fields have to be present.
         assertTrue("\"pack_format\": 46" in meta)
         assertTrue("\"supported_formats\"" in meta)
         assertTrue("\"min_format\": 46" in meta)
-        assertTrue("\"max_format\": 88" in meta)
+        assertTrue("\"max_format\": 97" in meta)
     }
 
     @Test
@@ -83,7 +84,7 @@ class PackMigrationTest {
         val out = Files.createTempDirectory("packmigrate-test")
         try {
             val plan = plan()
-            PackMigration(Path.of("src/test/resources/legacypack"), com.salyvn.packmigrate.core.PackFormat(46), com.salyvn.packmigrate.core.PackFormat(88))
+            PackMigration(Path.of("src/test/resources/legacypack"), PackFormat(46), PackFormat(97))
                 .apply(plan, out)
             plan.files.forEach { planned ->
                 assertEquals(planned.text, out.resolve(planned.relative).readText())
@@ -100,11 +101,111 @@ class PackMigrationTest {
     }
 
     @Test
-    fun `migrates a zip pack into a byte-reproducible zip and supports hybrid 1_20_1 to 26_2 ranges`(@TempDir dir: Path) {
+    fun `sarif report renders valid OASIS SARIF v2_1_0 with rule descriptors and SRCROOT locations`() {
+        val sarifText = SarifReport.render(plan())
+        val sarif = Json.parseToJsonElement(sarifText).jsonObject
+        assertEquals("2.1.0", sarif["version"]!!.jsonPrimitive.content)
+        val run = sarif["runs"]!!.jsonArray.single().jsonObject
+        val driver = run["tool"]!!.jsonObject["driver"]!!.jsonObject
+        assertEquals("packmigrate", driver["name"]!!.jsonPrimitive.content)
+        assertEquals(MigrationRule.entries.size, driver["rules"]!!.jsonArray.size)
+
+        val results = run["results"]!!.jsonArray
+        val ruleIds = results.map { it.jsonObject["ruleId"]!!.jsonPrimitive.content }.toSet()
+        assertTrue("PM003" in ruleIds)
+        assertTrue("PM006" in ruleIds)
+        assertTrue("PM007" in ruleIds)
+        val firstLoc = results[0].jsonObject["locations"]!!.jsonArray[0]
+            .jsonObject["physicalLocation"]!!.jsonObject["artifactLocation"]!!.jsonObject
+        assertEquals("%SRCROOT%", firstLoc["uriBaseId"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `overlay-items isolates generated definitions into overlay directory and registers overlays_entries`(@TempDir dir: Path) {
+        val packDir = dir.resolve("hybrid")
+        Files.createDirectories(packDir.resolve("assets/minecraft/models/item"))
+        Files.createDirectories(packDir.resolve("assets/myserver/models/item"))
+        Files.writeString(
+            packDir.resolve("pack.mcmeta"),
+            """{"pack": {"pack_format": 15, "description": "Hybrid pack"}}""",
+        )
+        Files.writeString(
+            packDir.resolve("assets/myserver/models/item/ruby_blade.json"),
+            """{"parent": "minecraft:item/handheld", "textures": {"layer0": "myserver:item/ruby_blade"}}""",
+        )
+        Files.writeString(
+            packDir.resolve("assets/minecraft/models/item/iron_sword.json"),
+            """{"parent": "minecraft:item/handheld", "overrides": [{"predicate": {"custom_model_data": 5}, "model": "myserver:item/ruby_blade"}]}""",
+        )
+
+        val sarifOut = dir.resolve("audit.sarif")
+        MigrateCommand().parse(
+            listOf(
+                packDir.toString(),
+                "--versions",
+                "1.20.1..26.3",
+                "--overlay-items",
+                "overlay_1_21_4",
+                "--write",
+                "--sarif",
+                sarifOut.toString(),
+                "--strict",
+            ),
+        )
+
+        assertTrue(packDir.resolve("overlay_1_21_4/assets/minecraft/items/iron_sword.json").exists())
+        assertTrue(!packDir.resolve("assets/minecraft/items/iron_sword.json").exists())
+        assertTrue(sarifOut.exists())
+
+        val meta = Json.parseToJsonElement(packDir.resolve("pack.mcmeta").readText()).jsonObject
+        val entries = meta["overlays"]!!.jsonObject["entries"]!!.jsonArray
+        assertEquals(1, entries.size)
+        assertEquals("overlay_1_21_4", entries[0].jsonObject["directory"]!!.jsonPrimitive.content)
+        assertEquals("97", entries[0].jsonObject["max_format"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `migrates legacy models inside existing overlay directories with base model fallback`(@TempDir dir: Path) {
+        val packDir = dir.resolve("overlay-src")
+        Files.createDirectories(packDir.resolve("assets/myserver/models/item"))
+        Files.createDirectories(packDir.resolve("v1_21_overlay/assets/minecraft/models/item"))
+        Files.writeString(
+            packDir.resolve("pack.mcmeta"),
+            """
+            {
+              "pack": {"pack_format": 34, "description": "Overlay source"},
+              "overlays": {
+                "entries": [
+                  {"formats": [34, 64], "directory": "v1_21_overlay"},
+                  {"formats": [34, 42], "directory": "missing_overlay"}
+                ]
+              }
+            }
+            """.trimIndent(),
+        )
+        // Referenced model lives in root pack, legacy override lives in v1_21_overlay
+        Files.writeString(
+            packDir.resolve("assets/myserver/models/item/emerald_staff.json"),
+            """{"parent": "minecraft:item/handheld"}""",
+        )
+        Files.writeString(
+            packDir.resolve("v1_21_overlay/assets/minecraft/models/item/stick.json"),
+            """{"overrides": [{"predicate": {"custom_model_data": 9}, "model": "myserver:item/emerald_staff"}]}""",
+        )
+
+        val migration = PackMigration(packDir, PackFormat(34), PackFormat(97))
+        val plan = migration.plan(stripOverrides = false)
+        assertEquals(0, plan.errors)
+        assertTrue(plan.issues.any { it.rule == MigrationRule.PM009 && "missing_overlay" in it.message })
+        assertTrue(plan.issues.any { it.rule == MigrationRule.PM010 && "v1_21_overlay" in it.message })
+        assertTrue(plan.files.any { it.relative == "v1_21_overlay/assets/minecraft/items/stick.json" })
+    }
+
+    @Test
+    fun `migrates a zip pack into a byte-reproducible zip and supports hybrid 1_20_1 to 26_3 ranges`(@TempDir dir: Path) {
         val inputZip = dir.resolve("legacy.zip")
         ZipPacks.writeDeterministicZip(Path.of("src/test/resources/legacypack"), inputZip)
 
-        // Remove diamond_sword's missing void_sword from a clean copy so CLI exits 0 on hybrid migration
         val cleanSrc = dir.resolve("clean-src")
         ZipPacks.extractSafely(inputZip, cleanSrc)
         Files.delete(cleanSrc.resolve("assets/minecraft/models/item/diamond_sword.json"))
@@ -113,13 +214,16 @@ class PackMigrationTest {
 
         val outZip1 = dir.resolve("migrated-1.zip")
         val outZip2 = dir.resolve("migrated-2.zip")
+        val sarifFile = dir.resolve("report.sarif")
         MigrateCommand().parse(
             listOf(
                 cleanZip.toString(),
                 "--versions",
-                "1.20.1..26.2",
+                "1.20.1..26.3",
                 "--zip",
                 outZip1.toString(),
+                "--sarif",
+                sarifFile.toString(),
                 "--json",
             ),
         )
@@ -127,21 +231,21 @@ class PackMigrationTest {
             listOf(
                 cleanZip.toString(),
                 "--versions",
-                "1.20.1..26.2",
+                "1.20.1..26.3",
                 "--zip",
                 outZip2.toString(),
                 "--json",
             ),
         )
         assertTrue(Files.readAllBytes(outZip1).contentEquals(Files.readAllBytes(outZip2)))
+        assertTrue(sarifFile.exists())
 
-        // --strip-overrides with a pre-1.21.4 floor is rejected with exit code 2
         val bad = assertThrows<ProgramResult> {
             MigrateCommand().parse(
                 listOf(
                     cleanZip.toString(),
                     "--versions",
-                    "1.20.1..26.2",
+                    "1.20.1..26.3",
                     "--strip-overrides",
                     "--zip",
                     dir.resolve("bad.zip").toString(),
@@ -153,8 +257,8 @@ class PackMigrationTest {
         val reportStr = JsonMigrationReport.render(
             pack = cleanZip,
             plan = plan(),
-            minFormat = com.salyvn.packmigrate.core.PackFormat(15),
-            maxFormat = com.salyvn.packmigrate.core.PackFormat(88),
+            minFormat = PackFormat(15),
+            maxFormat = PackFormat(97),
             applied = false,
             outputDir = null,
             zipArtifact = null,

@@ -1,5 +1,5 @@
-name: 'Packmigrate 1.21.4+ Item Model Migrator'
-description: 'Migrate legacy Minecraft CustomModelData resource pack overrides (directories or .zip) to 1.21.4+ item model definitions.'
+name: 'Packmigrate Resource Pack Migrator'
+description: 'Migrate legacy Minecraft CustomModelData overrides to 1.21.4 through 26.3+ item model definitions with SARIF v2.1.0 diagnostics.'
 author: 'Salyvn'
 branding:
   icon: 'refresh-cw'
@@ -7,12 +7,21 @@ branding:
 
 inputs:
   args:
-    description: 'Arguments passed to packmigrate (for example: "legacy-pack.zip --zip migrated-pack.zip --strict")'
+    description: 'Arguments passed to packmigrate (for example: "legacy-pack.zip --versions 1.20.1..26.3 --zip migrated-pack.zip --strict")'
     required: true
-  version:
-    description: 'Packmigrate release tag to download (defaults to v0.2.0)'
+  sarif:
+    description: 'Optional output path for an OASIS SARIF v2.1.0 migration audit report'
     required: false
-    default: 'v0.2.0'
+    default: ''
+  version:
+    description: 'Packmigrate release tag to download (defaults to v0.3.0)'
+    required: false
+    default: 'v0.3.0'
+
+outputs:
+  sarif-file:
+    description: 'Path to the generated SARIF v2.1.0 report when the sarif input is set'
+    value: ${{ inputs.sarif }}
 
 runs:
   using: 'composite'
@@ -28,6 +37,7 @@ runs:
       env:
         PACKMIGRATE_VERSION: ${{ inputs.version }}
         PACKMIGRATE_ARGS: ${{ inputs.args }}
+        PACKMIGRATE_SARIF: ${{ inputs.sarif }}
       run: |
         set -euo pipefail
         VER="${PACKMIGRATE_VERSION#v}"
@@ -38,5 +48,9 @@ runs:
           curl -fsSL -o "$JAR" \
             "https://github.com/SalyyS1/packmigrate/releases/download/v${VER}/packmigrate.jar"
         fi
+        SARIF_ARG=""
+        if [ -n "$PACKMIGRATE_SARIF" ]; then
+          SARIF_ARG="--sarif $PACKMIGRATE_SARIF"
+        fi
         # shellcheck disable=SC2086
-        java -jar "$JAR" $PACKMIGRATE_ARGS
+        java -jar "$JAR" $PACKMIGRATE_ARGS $SARIF_ARG

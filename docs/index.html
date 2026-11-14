@@ -1,0 +1,1467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>packmigrate v0.3.0 | Client-Side Minecraft 1.21.4 to 26.3 Resource Pack Migrator</title>
+  <meta name="description" content="Zero-upload browser resource pack migrator: convert legacy CustomModelData overrides into Minecraft 1.21.4 through 26.3 (format 97) item model definitions, upgrade pack.mcmeta overlays, and export SARIF v2.1.0." />
+  <style>
+    :root {
+      --bg: #0b0e14;
+      --panel: #121722;
+      --panel-alt: #171e2c;
+      --border: #253047;
+      --text: #e6edf3;
+      --muted: #8b9bb4;
+      --accent: #a78bfa;
+      --accent-dim: rgba(167, 139, 250, 0.14);
+      --green: #3fb950;
+      --amber: #d29922;
+      --red: #f85149;
+      --blue: #58a6ff;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      line-height: 1.5;
+    }
+    .wrap {
+      max-width: 1260px;
+      margin: 0 auto;
+      padding: 28px 20px 56px;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 22px;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 1.55rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .badge {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--accent-dim);
+      color: var(--accent);
+      border: 1px solid rgba(167, 139, 250, 0.35);
+    }
+    .brand p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.94rem;
+      max-width: 760px;
+    }
+    .nav-links {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      font-family: var(--sans);
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 8px 13px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      text-decoration: none;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .btn:hover { border-color: var(--accent); background: var(--panel-alt); }
+    .btn-primary {
+      background: #6d28d9;
+      border-color: #7c3aed;
+      color: #fff;
+    }
+    .btn-primary:hover { background: #7c3aed; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .controls-grid {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    @media (max-width: 900px) {
+      .controls-grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .card-title {
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin: 0 0 10px;
+      font-weight: 600;
+    }
+    .dropzone {
+      border: 1.5px dashed var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      text-align: center;
+      background: rgba(255,255,255,0.015);
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .dropzone.dragover, .dropzone:hover {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+    }
+    .preset-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    .preset-btn {
+      font-size: 0.78rem;
+      padding: 5px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--panel-alt);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .preset-btn:hover, .preset-btn.active {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .field-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    input[type="text"], select {
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-family: var(--mono);
+      font-size: 0.84rem;
+    }
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.84rem;
+      color: var(--text);
+      margin-top: 8px;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    @media (max-width: 860px) {
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+    }
+    .metric {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .metric .k { font-size: 0.76rem; color: var(--muted); }
+    .metric .v { font-family: var(--mono); font-size: 1.25rem; font-weight: 700; margin-top: 2px; }
+    .tabs {
+      display: flex;
+      gap: 6px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .tab {
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      padding: 9px 14px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .split {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 860px) {
+      .split { grid-template-columns: 1fr; }
+    }
+    .item-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      max-height: 520px;
+      overflow-y: auto;
+    }
+    .item-list li {
+      padding: 9px 11px;
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      cursor: pointer;
+      border: 1px solid transparent;
+      margin-bottom: 5px;
+      background: var(--panel-alt);
+      word-break: break-all;
+    }
+    .item-list li.active {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+      color: #fff;
+    }
+    .code-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 980px) {
+      .code-pair { grid-template-columns: 1fr; }
+    }
+    pre, textarea.editor {
+      margin: 0;
+      background: #080b10;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 0.79rem;
+      line-height: 1.48;
+      overflow: auto;
+      max-height: 480px;
+      color: #d9e5f2;
+    }
+    textarea.editor {
+      width: 100%;
+      min-height: 360px;
+      resize: vertical;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.84rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; font-size: 0.77rem; text-transform: uppercase; }
+    .pill {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .pill-error { background: rgba(248,81,73,0.16); color: var(--red); }
+    .pill-warning { background: rgba(210,153,34,0.16); color: var(--amber); }
+    .pill-note { background: rgba(88,166,255,0.16); color: var(--blue); }
+    .sha-bar {
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: #080b10;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      color: var(--green);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .hidden { display: none !important; }
+    footer {
+      margin-top: 36px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.82rem;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <h1>packmigrate <span class="badge">v0.3.0</span> <span class="badge">MC 1.20 .. 26.3 (format 97)</span></h1>
+        <p>Zero-upload client-side Minecraft resource pack migrator. Converts legacy <code>models/item/*.json</code> <code>overrides</code> into exact 1.21.4+ <code>assets/&lt;ns&gt;/items/*.json</code> decision trees, upgrades <code>pack.mcmeta</code> and <code>overlays.entries</code> up to 26.3, and exports OASIS SARIF v2.1.0.</p>
+      </div>
+      <div class="nav-links">
+        <button class="btn btn-primary" id="downloadZipBtn">Download Migrated .zip</button>
+        <button class="btn" id="downloadSarifBtn">Download SARIF v2.1.0</button>
+        <a class="btn" href="https://github.com/SalyyS1/packmigrate" target="_blank" rel="noopener">GitHub CLI &amp; Action</a>
+      </div>
+    </header>
+
+    <div class="controls-grid">
+      <div class="card">
+        <div class="card-title">1. Pack Source (100% Local Browser Memory)</div>
+        <div class="dropzone" id="dropzone">
+          <div><strong>Drop a resource pack <code>.zip</code> here</strong> or click to browse</div>
+          <div style="font-size:0.79rem;color:var(--muted);margin-top:4px;">Files never leave your device. Supports Deflate &amp; Store ZIP archives.</div>
+          <input type="file" id="zipInput" accept=".zip" class="hidden" />
+        </div>
+        <div class="preset-row">
+          <span style="font-size:0.78rem;color:var(--muted);align-self:center;">Or inspect preset:</span>
+          <button class="preset-btn active" data-preset="fallback">Multi-Predicate Fallback &amp; Missing Model</button>
+          <button class="preset-btn" data-preset="vanilla">Bow, Crossbow, Compass &amp; Trim Quirks</button>
+          <button class="preset-btn" data-preset="overlay">Hybrid 1.20.1..26.3 Overlay Pack</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">2. Target Era &amp; Output Options</div>
+        <div class="field-row">
+          <div>
+            <label for="rangePreset">Quick Version Preset</label>
+            <select id="rangePreset">
+              <option value="1.21.4..26.3" selected>1.21.4..26.3 (Dual-Era 46..97)</option>
+              <option value="1.20.1..26.3">1.20.1..26.3 (Hybrid 15..97)</option>
+              <option value="26.1..[97,1]">26.1..[97,1] (Modern Tuple Only)</option>
+              <option value="1.21.4..1.21.8">1.21.4..1.21.8 (Pre-Minor 46..64)</option>
+            </select>
+          </div>
+          <div>
+            <label for="rangeInput">--versions Range</label>
+            <input type="text" id="rangeInput" value="1.21.4..26.3" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div>
+            <label for="overlayDirInput">--overlay-items Directory (Optional)</label>
+            <input type="text" id="overlayDirInput" placeholder="e.g. overlay_1_21_4" />
+          </div>
+          <div style="display:flex;align-items:flex-end;">
+            <label class="check-row" style="margin:0;">
+              <input type="checkbox" id="stripOverridesChk" />
+              <span><code>--strip-overrides</code> (1.21.4+ floor)</span>
+            </label>
+          </div>
+        </div>
+        <div id="configError" style="font-size:0.8rem;color:var(--red);margin-top:6px;"></div>
+      </div>
+    </div>
+
+    <div class="metrics">
+      <div class="metric"><div class="k">Items Migrated</div><div class="v" id="mItems">0</div></div>
+      <div class="metric"><div class="k">Planned Files</div><div class="v" id="mFiles">0</div></div>
+      <div class="metric"><div class="k">Resolved Format</div><div class="v" id="mFormat">46..97</div></div>
+      <div class="metric"><div class="k">Errors / Warnings</div><div class="v" id="mIssues">0 / 0</div></div>
+      <div class="metric"><div class="k">SARIF Rules Triggered</div><div class="v" id="mRules">0</div></div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="trees">Migrated items/*.json Trees</button>
+      <button class="tab" data-tab="mcmeta">pack.mcmeta &amp; Overlays</button>
+      <button class="tab" data-tab="diagnostics">Diagnostics &amp; SARIF (PM001..PM011)</button>
+      <button class="tab" data-tab="sandbox">Live Single-Model JSON Sandbox</button>
+    </div>
+
+    <section id="tab-trees">
+      <div class="split">
+        <div class="card">
+          <div class="card-title">Migrated Items</div>
+          <ul class="item-list" id="itemList"></ul>
+        </div>
+        <div class="code-pair">
+          <div class="card">
+            <div class="card-title" id="srcTitle">Legacy Source (models/item/*.json)</div>
+            <pre id="srcCode"></pre>
+          </div>
+          <div class="card">
+            <div class="card-title" id="dstTitle">Generated 1.21.4..26.3 Definition (items/*.json)</div>
+            <pre id="dstCode"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-mcmeta" class="hidden">
+      <div class="code-pair">
+        <div class="card">
+          <div class="card-title">Input pack.mcmeta</div>
+          <pre id="mcmetaIn"></pre>
+        </div>
+        <div class="card">
+          <div class="card-title">Migrated pack.mcmeta</div>
+          <pre id="mcmetaOut"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-diagnostics" class="hidden">
+      <div class="card" style="margin-bottom:14px;">
+        <div class="card-title">Pack Audit Findings</div>
+        <table>
+          <thead>
+            <tr><th>Rule</th><th>Severity</th><th>Artifact Path</th><th>Diagnostic Message</th></tr>
+          </thead>
+          <tbody id="issuesBody"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <div class="card-title">OASIS SARIF v2.1.0 Preview</div>
+        <pre id="sarifPreview"></pre>
+      </div>
+    </section>
+
+    <section id="tab-sandbox" class="hidden">
+      <div class="code-pair">
+        <div class="card">
+          <div class="card-title">Edit Legacy Item Model JSON (Item ID: <input id="sandboxItem" type="text" value="paper" style="width:140px;display:inline-block;padding:3px 7px;" />)</div>
+          <textarea class="editor" id="sandboxInput"></textarea>
+        </div>
+        <div class="card">
+          <div class="card-title">Live Reconstructed Decision Tree</div>
+          <pre id="sandboxOutput"></pre>
+        </div>
+      </div>
+    </section>
+
+    <div class="sha-bar" id="shaBar">
+      <span id="shaText">Ready: click "Download Migrated .zip" to compute deterministic archive &amp; SHA-1 digest.</span>
+    </div>
+
+    <footer>
+      <div>packmigrate v0.3.0 by <a href="https://github.com/SalyyS1">Salyvn (SalyyS1)</a>. Zero telemetry, Apache-2.0 License.</div>
+      <div>Companion tools: <a href="https://salyys1.github.io/packmerge/">packmerge</a> &middot; <a href="https://salyys1.github.io/glyphsmith/">glyphsmith</a> &middot; <a href="https://salyys1.github.io/shadersmith/">shadersmith</a> &middot; <a href="https://salyys1.github.io/foliascan/">foliascan</a></div>
+    </footer>
+  </div>
+
+<script>
+(() => {
+  const RELEASES = {
+    "1.20": 15, "1.20.1": 15, "1.20.2": 18, "1.20.3": 22, "1.20.4": 22,
+    "1.20.5": 32, "1.20.6": 32, "1.21": 34, "1.21.1": 34, "1.21.2": 42,
+    "1.21.3": 42, "1.21.4": 46, "1.21.5": 55, "1.21.6": 63, "1.21.7": 64,
+    "1.21.8": 64, "1.21.9": 69, "1.21.10": 69, "1.21.11": 75,
+    "26.1": 84, "26.1.1": 84, "26.1.2": 84, "26.2": 88, "26.3": 97
+  };
+
+  const VANILLA_MODELS = new Set([
+    "item/bow", "item/bow_pulling_0", "item/bow_pulling_1", "item/bow_pulling_2",
+    "item/crossbow", "item/crossbow_pulling_0", "item/crossbow_pulling_1", "item/crossbow_pulling_2",
+    "item/crossbow_arrow", "item/crossbow_firework", "item/compass", "item/compass_00", "item/compass_16",
+    "item/recovery_compass", "item/clock", "item/clock_00", "item/clock_32",
+    "item/brush", "item/brush_brushing_0", "item/brush_brushing_1", "item/brush_brushing_2",
+    "item/diamond_sword", "item/iron_sword", "item/paper", "item/stick", "item/shield",
+    "item/diamond_chestplate", "item/diamond_chestplate_iron_trim", "item/diamond_chestplate_diamond_trim",
+    "item/fishing_rod", "item/fishing_rod_cast", "item/elytra", "item/broken_elytra", "item/bundle"
+  ]);
+
+  const TRIM_MATERIALS = [
+    ["minecraft:quartz", 0.1], ["minecraft:iron", 0.2], ["minecraft:netherite", 0.3],
+    ["minecraft:redstone", 0.4], ["minecraft:copper", 0.5], ["minecraft:gold", 0.6],
+    ["minecraft:emerald", 0.7], ["minecraft:diamond", 0.8], ["minecraft:lapis", 0.9],
+    ["minecraft:amethyst", 1.0]
+  ];
+
+  const PREDICATE_TABLE = {
+    custom_model_data: { legacy: "custom_model_data", kind: "NUMERIC", property: "minecraft:custom_model_data" },
+    damage: { legacy: "damage", kind: "NUMERIC", property: "minecraft:damage" },
+    damaged: { legacy: "damaged", kind: "BOOLEAN", property: "minecraft:damaged" },
+    broken: { legacy: "broken", kind: "BOOLEAN", property: "minecraft:broken" },
+    pulling: { legacy: "pulling", kind: "BOOLEAN", property: "minecraft:using_item" },
+    pull: { legacy: "pull", kind: "NUMERIC", property: "minecraft:use_duration", scale: 0.05 },
+    charged: { legacy: "charged", kind: "SELECT", property: "minecraft:charge_type", select: { property: "minecraft:charge_type", values: [["none", 0], ["arrow", 1], ["rocket", 1]], absentValue: 0 } },
+    firework: { legacy: "firework", kind: "SELECT", property: "minecraft:charge_type", select: { property: "minecraft:charge_type", values: [["none", 0], ["arrow", 0], ["rocket", 1]], absentValue: 0 } },
+    blocking: { legacy: "blocking", kind: "BOOLEAN", property: "minecraft:using_item" },
+    throwing: { legacy: "throwing", kind: "BOOLEAN", property: "minecraft:using_item" },
+    cast: { legacy: "cast", kind: "BOOLEAN", property: "minecraft:fishing_rod/cast" },
+    time: { legacy: "time", kind: "NUMERIC", property: "minecraft:time" },
+    angle: { legacy: "angle", kind: "NUMERIC", property: "minecraft:compass" },
+    cooldown: { legacy: "cooldown", kind: "NUMERIC", property: "minecraft:cooldown" },
+    level: { legacy: "level", kind: "SELECT", property: "minecraft:block_state", select: { property: "minecraft:block_state", values: Array.from({length:16}, (_,i)=>[String(i), i/16]), absentValue: 1, blockStateProperty: "level" } },
+    filled: { legacy: "filled", kind: "NUMERIC", property: "minecraft:bundle/fullness" },
+    tooting: { legacy: "tooting", kind: "BOOLEAN", property: "minecraft:using_item" },
+    brushing: { legacy: "brushing", kind: "NUMERIC", property: "minecraft:use_cycle", scale: 0.1, period: 10 },
+    honey_level: { legacy: "honey_level", kind: "SELECT", property: "minecraft:block_state", select: { property: "minecraft:block_state", values: Array.from({length:6}, (_,i)=>[String(i), i/5]), absentValue: 0, blockStateProperty: "honey_level" } },
+    lefthanded: { legacy: "lefthanded", kind: "SELECT", property: "minecraft:main_hand", select: { property: "minecraft:main_hand", values: [["left", 1], ["right", 0]], absentValue: 0 } },
+    trim_type: { legacy: "trim_type", kind: "SELECT", property: "minecraft:trim_material", select: { property: "minecraft:trim_material", values: TRIM_MATERIALS, absentValue: 0 } }
+  };
+
+  const RULES = [
+    { id: "PM001", name: "LegacyModelParseError", level: "error", short: "Malformed legacy item model or pack metadata JSON" },
+    { id: "PM002", name: "UnknownLegacyPredicate", level: "error", short: "Unknown legacy item model predicate" },
+    { id: "PM003", name: "MissingReferencedModel", level: "error", short: "Referenced item model is missing from pack and vanilla" },
+    { id: "PM004", name: "ShadowedCustomModelData", level: "warning", short: "Duplicate unconditional custom_model_data entry shadows earlier override" },
+    { id: "PM005", name: "ExistingItemDefinitionOverwritten", level: "warning", short: "Existing 1.21.4+ item model definition would be overwritten" },
+    { id: "PM006", name: "SharedCustomModelDataAcrossItems", level: "note", short: "Multiple items share the same custom_model_data threshold" },
+    { id: "PM007", name: "VanillaPredicateQuirkSynthesized", level: "note", short: "Item-specific vanilla predicate dispatch synthesized" },
+    { id: "PM008", name: "InvalidOverlayDirectory", level: "error", short: "Invalid overlays.entries directory or format bounds in pack.mcmeta" },
+    { id: "PM009", name: "MissingOverlayDirectory", level: "warning", short: "Referenced overlay directory is missing from pack" },
+    { id: "PM010", name: "OverlayFormatEraMigrated", level: "note", short: "Legacy overlay formats upgraded for 1.21.9 through 26.3 compatibility" },
+    { id: "PM011", name: "NonIntegerOrNegativeCustomModelData", level: "warning", short: "Fractional or negative custom_model_data threshold" }
+  ];
+
+  const PRESETS = {
+    fallback: {
+      "pack.mcmeta": JSON.stringify({ pack: { pack_format: 34, description: "myserver \"custom\" items" } }, null, 2),
+      "assets/minecraft/models/item/paper.json": JSON.stringify({
+        parent: "minecraft:item/generated",
+        textures: { layer0: "minecraft:item/paper" },
+        overrides: [
+          { predicate: { custom_model_data: 1 }, model: "myserver:item/scroll" },
+          { predicate: { custom_model_data: 2 }, model: "myserver:item/map_fragment" },
+          { predicate: { custom_model_data: 3, lefthanded: 1 }, model: "myserver:item/left_scroll" }
+        ]
+      }, null, 2),
+      "assets/minecraft/models/item/bow.json": JSON.stringify({
+        parent: "minecraft:item/generated",
+        overrides: [
+          { predicate: { pulling: 1 }, model: "minecraft:item/bow_pulling_0" },
+          { predicate: { pulling: 1, pull: 0.65 }, model: "minecraft:item/bow_pulling_1" },
+          { predicate: { pulling: 1, pull: 0.9 }, model: "minecraft:item/bow_pulling_2" },
+          { predicate: { custom_model_data: 1 }, model: "myserver:item/longbow" },
+          { predicate: { custom_model_data: 1, pulling: 1 }, model: "myserver:item/longbow_pulling_0" }
+        ]
+      }, null, 2),
+      "assets/minecraft/models/item/diamond_sword.json": JSON.stringify({
+        parent: "minecraft:item/handheld",
+        overrides: [
+          { predicate: { custom_model_data: 1 }, model: "myserver:item/flame_sword" },
+          { predicate: { custom_model_data: 10 }, model: "myserver:item/void_sword" }
+        ]
+      }, null, 2),
+      "assets/myserver/models/item/scroll.json": "{\"parent\":\"minecraft:item/generated\"}",
+      "assets/myserver/models/item/map_fragment.json": "{\"parent\":\"minecraft:item/generated\"}",
+      "assets/myserver/models/item/left_scroll.json": "{\"parent\":\"minecraft:item/generated\"}",
+      "assets/myserver/models/item/longbow.json": "{\"parent\":\"minecraft:item/generated\"}",
+      "assets/myserver/models/item/longbow_pulling_0.json": "{\"parent\":\"minecraft:item/generated\"}",
+      "assets/myserver/models/item/flame_sword.json": "{\"parent\":\"minecraft:item/handheld\"}"
+    },
+    vanilla: {
+      "pack.mcmeta": JSON.stringify({ pack: { pack_format: 42, description: "Vanilla predicate showcase" } }, null, 2),
+      "assets/minecraft/models/item/crossbow.json": JSON.stringify({
+        parent: "minecraft:item/generated",
+        overrides: [
+          { predicate: { pulling: 1 }, model: "item/crossbow_pulling_0" },
+          { predicate: { pulling: 1, pull: 0.58 }, model: "item/crossbow_pulling_1" },
+          { predicate: { pulling: 1, pull: 1.0 }, model: "item/crossbow_pulling_2" },
+          { predicate: { charged: 1 }, model: "item/crossbow_arrow" },
+          { predicate: { charged: 1, firework: 1 }, model: "item/crossbow_firework" }
+        ]
+      }, null, 2),
+      "assets/minecraft/models/item/compass.json": JSON.stringify({
+        parent: "minecraft:item/generated",
+        overrides: [
+          { predicate: { angle: 0.0 }, model: "item/compass_00" },
+          { predicate: { angle: 0.5 }, model: "item/compass_16" }
+        ]
+      }, null, 2),
+      "assets/minecraft/models/item/clock.json": JSON.stringify({
+        parent: "minecraft:item/generated",
+        overrides: [
+          { predicate: { time: 0.0 }, model: "item/clock_00" },
+          { predicate: { time: 0.5 }, model: "item/clock_32" }
+        ]
+      }, null, 2),
+      "assets/minecraft/models/item/diamond_chestplate.json": JSON.stringify({
+        parent: "minecraft:item/generated",
+        overrides: [
+          { predicate: { trim_type: 0.2 }, model: "item/diamond_chestplate_iron_trim" },
+          { predicate: { trim_type: 0.8 }, model: "item/diamond_chestplate_diamond_trim" }
+        ]
+      }, null, 2)
+    },
+    overlay: {
+      "pack.mcmeta": JSON.stringify({
+        pack: { pack_format: 15, description: "Multi-era network pack" },
+        overlays: {
+          entries: [
+            { formats: [34, 42], directory: "v1_21_backport" },
+            { formats: { min_inclusive: 46, max_inclusive: 64 }, directory: "v1_21_4_plus" }
+          ]
+        },
+        filter: { block: [{ namespace: "minecraft", path: "recipes/.*" }] }
+      }, null, 2),
+      "v1_21_backport/assets/myserver/models/item/relic.json": "{\"parent\":\"minecraft:item/generated\"}",
+      "v1_21_4_plus/assets/minecraft/models/item/stick.json": JSON.stringify({
+        parent: "minecraft:item/handheld",
+        overrides: [
+          { predicate: { custom_model_data: 5 }, model: "myserver:item/sun_wand" }
+        ]
+      }, null, 2),
+      "assets/myserver/models/item/sun_wand.json": "{\"parent\":\"minecraft:item/handheld\"}"
+    }
+  };
+
+  let currentFiles = new Map();
+  let binaryPassThrough = new Map();
+  let selectedItemIdx = 0;
+  let latestPlan = null;
+
+  function parseModelId(ref) {
+    const t = ref.trim();
+    const idx = t.indexOf(":");
+    const ns = idx >= 0 ? t.slice(0, idx) : "minecraft";
+    const path = idx >= 0 ? t.slice(idx + 1) : t;
+    return { ns, path, qualified: `${ns}:${path}`, relativeFile: `assets/${ns}/models/${path}.json` };
+  }
+
+  function parseOneFormat(text) {
+    const s = text.trim();
+    if (!s) throw new Error("Empty version range endpoint.");
+    if (RELEASES[s] !== undefined) return { major: RELEASES[s], minor: null };
+    if (s.startsWith("[") && s.endsWith("]")) {
+      const parts = s.slice(1, -1).split(",").map(p => p.trim());
+      if ((parts.length === 1 || parts.length === 2) && parts.every(p => /^\d+$/.test(p))) {
+        return { major: Number(parts[0]), minor: parts[1] !== undefined ? Number(parts[1]) : null };
+      }
+      throw new Error(`Invalid format tuple '${s}'.`);
+    }
+    const num = s.split(".");
+    if (num.length <= 2 && num.every(p => /^\d+$/.test(p))) {
+      const major = Number(num[0]);
+      const minor = num[1] !== undefined ? Number(num[1]) : null;
+      if (num.length === 1 || major >= 65) return { major, minor };
+    }
+    throw new Error(`Unknown Minecraft version '${s}'. Known releases include 1.20.1..26.3 or format numbers like 97.1.`);
+  }
+
+  function parseRange(spec) {
+    const parts = spec.split("..");
+    if (parts.length > 2) throw new Error(`'${spec}' is not a valid range; use start..end.`);
+    const min = parseOneFormat(parts[0]);
+    const max = parts.length === 2 ? parseOneFormat(parts[1]) : min;
+    if (min.major > max.major || (min.major === max.major && (min.minor ?? 0) > (max.minor ?? 999999))) {
+      throw new Error(`min_format (${fmtStr(min)}) exceeds max_format (${fmtStr(max)}).`);
+    }
+    return { min, max };
+  }
+
+  function fmtJson(f) { return f.minor === null ? f.major : [f.major, f.minor]; }
+  function fmtStr(f) { return f.minor === null ? String(f.major) : `${f.major}.${f.minor}`; }
+
+  function buildOverlayEntry(dir, oMin, oMax, packMax) {
+    const out = {};
+    if (oMin.major > 64) {
+      out.min_format = fmtJson(oMin);
+      out.max_format = fmtJson(oMax);
+    } else if (packMax.major > 64 || oMax.major > 64) {
+      out.formats = [oMin.major, Math.min(oMax.major, 64)];
+      out.min_format = fmtJson(oMin);
+      out.max_format = fmtJson(oMax);
+    } else {
+      out.formats = [oMin.major, oMax.major];
+    }
+    out.directory = dir;
+    return out;
+  }
+
+  function migratePackMeta(existingText, min, max, overlayItemsDir) {
+    const issues = [];
+    const validOverlayDirs = [];
+    if (min.major <= 64 && min.major < 15) {
+      throw new Error("Multi-version packs cannot start below format 15 (1.20).");
+    }
+    if (overlayItemsDir && !/^[a-z0-9_-]+$/.test(overlayItemsDir)) {
+      throw new Error(`--overlay-items '${overlayItemsDir}' must match [a-z0-9_-]+.`);
+    }
+
+    let rootObj = null;
+    if (existingText !== null) {
+      try {
+        rootObj = JSON.parse(existingText);
+      } catch (e) {
+        issues.push({ ruleId: "PM001", level: "error", path: "pack.mcmeta", message: `pack.mcmeta is invalid JSON: ${e.message}` });
+      }
+    }
+
+    const desc = (rootObj && rootObj.pack && rootObj.pack.description !== undefined) ? rootObj.pack.description : "migrated pack";
+    const packSec = { description: desc };
+    if (min.major > 64) {
+      packSec.min_format = fmtJson(min);
+      packSec.max_format = fmtJson(max);
+    } else {
+      packSec.pack_format = min.major;
+      packSec.supported_formats = [min.major, Math.min(max.major, 64)];
+      packSec.min_format = fmtJson(min);
+      packSec.max_format = fmtJson(max);
+    }
+
+    const outRoot = { pack: packSec };
+    const entriesOut = [];
+    let extraHandled = false;
+    const extraSpec = overlayItemsDir ? { dir: overlayItemsDir, min: min.major > 46 ? min : { major: 46, minor: null }, max } : null;
+
+    const existingEntries = rootObj?.overlays?.entries;
+    if (Array.isArray(existingEntries)) {
+      existingEntries.forEach((ent, idx) => {
+        if (!ent || typeof ent !== "object") {
+          issues.push({ ruleId: "PM008", level: "error", path: "pack.mcmeta", message: `overlays.entries[${idx}] is not an object.` });
+          return;
+        }
+        const dir = ent.directory;
+        if (typeof dir !== "string" || !/^[a-z0-9_-]+$/.test(dir)) {
+          issues.push({ ruleId: "PM008", level: "error", path: "pack.mcmeta", message: `Overlay directory '${dir || ""}' violates [a-z0-9_-]+.` });
+          return;
+        }
+        if (extraSpec && dir === extraSpec.dir) {
+          validOverlayDirs.push(dir);
+          entriesOut.push(buildOverlayEntry(dir, extraSpec.min, extraSpec.max, max));
+          extraHandled = true;
+          return;
+        }
+        const parseFmt = (v) => typeof v === "number" ? { major: v, minor: null } : (Array.isArray(v) ? { major: v[0], minor: v[1] ?? null } : null);
+        const pMin = parseFmt(ent.min_format);
+        const pMax = parseFmt(ent.max_format);
+        let legacy = null;
+        if (typeof ent.formats === "number") legacy = [ent.formats, ent.formats];
+        else if (Array.isArray(ent.formats) && ent.formats.length === 2) legacy = [ent.formats[0], ent.formats[1]];
+        else if (ent.formats && typeof ent.formats.min_inclusive === "number") legacy = [ent.formats.min_inclusive, ent.formats.max_inclusive];
+
+        let eMin, eMax, upgraded = false;
+        if (pMin && pMax) {
+          eMin = pMin; eMax = pMax;
+          upgraded = eMin.major > 64 && ent.formats !== undefined;
+        } else if (legacy) {
+          eMin = { major: legacy[0], minor: null };
+          eMax = (legacy[1] >= 64 && max.major > 64) ? max : { major: legacy[1], minor: null };
+          upgraded = max.major > 64 || eMax.major > 64;
+        } else {
+          issues.push({ ruleId: "PM008", level: "error", path: "pack.mcmeta", message: `Overlay '${dir}' has neither formats nor min_format/max_format.` });
+          return;
+        }
+        if (upgraded) {
+          issues.push({ ruleId: "PM010", level: "note", path: "pack.mcmeta", message: `Upgraded overlays.entries '${dir}' to ${fmtStr(eMin)}..${fmtStr(eMax)} for 1.21.9..26.3 compatibility.` });
+        }
+        validOverlayDirs.push(dir);
+        entriesOut.push(buildOverlayEntry(dir, eMin, eMax, max));
+      });
+    }
+    if (extraSpec && !extraHandled) {
+      validOverlayDirs.push(extraSpec.dir);
+      entriesOut.push(buildOverlayEntry(extraSpec.dir, extraSpec.min, extraSpec.max, max));
+    }
+    if (entriesOut.length > 0) outRoot.overlays = { entries: entriesOut };
+    if (rootObj && typeof rootObj === "object") {
+      for (const [k, v] of Object.entries(rootObj)) {
+        if (k !== "pack" && k !== "overlays") outRoot[k] = v;
+      }
+    }
+    return { rendered: JSON.stringify(outRoot, null, 2) + "\n", validOverlayDirs, issues };
+  }
+
+  function convertLegacyModel(namespace, item, text, sourceOverlay) {
+    const selfModel = `${namespace}:item/${item}`;
+    const baseRel = `assets/${namespace}/models/item/${item}.json`;
+    const sourcePath = sourceOverlay ? `${sourceOverlay}/${baseRel}` : baseRel;
+    const issues = [];
+    let root;
+    try {
+      root = JSON.parse(text);
+    } catch (e) {
+      issues.push({ ruleId: "PM001", level: "error", path: sourcePath, message: `${selfModel} is not valid JSON: ${e.message}` });
+      return { item: selfModel, definition: null, issues, referencedModels: [], cmdValues: [], sourceOverlay, sourcePath };
+    }
+    if (!Array.isArray(root.overrides) || root.overrides.length === 0) return null;
+
+    const overrides = [];
+    for (let i = 0; i < root.overrides.length; i++) {
+      const ov = root.overrides[i];
+      if (!ov || typeof ov !== "object" || typeof ov.model !== "string") {
+        issues.push({ ruleId: "PM001", level: "error", path: sourcePath, message: `${selfModel} overrides[${i}] is missing string 'model'.` });
+        continue;
+      }
+      const pred = {};
+      if (ov.predicate && typeof ov.predicate === "object") {
+        for (const [k, v] of Object.entries(ov.predicate)) {
+          if (typeof v !== "number") {
+            issues.push({ ruleId: "PM001", level: "error", path: sourcePath, message: `${selfModel} overrides[${i}] predicate '${k}' is not numeric.` });
+          } else {
+            pred[k] = v;
+          }
+        }
+      }
+      overrides.push({ index: i, model: ov.model, predicate: pred });
+    }
+
+    const unknown = [...new Set(overrides.flatMap(o => Object.keys(o.predicate)).filter(k => !PREDICATE_TABLE[k]))];
+    unknown.forEach(name => {
+      issues.push({ ruleId: "PM002", level: "error", path: sourcePath, message: `Predicate '${name}' is not one the legacy format defined; the override using it cannot be migrated.` });
+    });
+
+    const usable = overrides.filter(o => Object.keys(o.predicate).every(k => !!PREDICATE_TABLE[k]));
+    usable.forEach(o => {
+      const raw = o.predicate.custom_model_data;
+      if (raw !== undefined && (raw < 0 || raw !== Math.floor(raw))) {
+        issues.push({ ruleId: "PM011", level: "warning", path: sourcePath, message: `custom_model_data ${raw} is negative or fractional; Minecraft writes integer CustomModelData tags to floats[0].` });
+      }
+    });
+
+    const plainByCmd = new Map();
+    usable.forEach(o => {
+      const keys = Object.keys(o.predicate);
+      if (keys.length === 1 && keys[0] === "custom_model_data") {
+        const v = o.predicate.custom_model_data;
+        if (!plainByCmd.has(v)) plainByCmd.set(v, []);
+        plainByCmd.get(v).push(o);
+      }
+    });
+    for (const [val, list] of plainByCmd.entries()) {
+      if (list.length > 1) {
+        issues.push({ ruleId: "PM004", level: "warning", path: sourcePath, message: `custom_model_data ${val} is declared ${list.length} times with no other predicate; the last one (${list[list.length - 1].model}) wins.` });
+      }
+    }
+
+    const shortItem = item.split("/").pop();
+    const infoFor = (name) => {
+      const base = PREDICATE_TABLE[name];
+      if (name === "pull" && shortItem === "crossbow") {
+        return { ...base, property: "minecraft:crossbow/pull", scale: undefined };
+      }
+      return base;
+    };
+    const addNote = (msg) => {
+      if (!issues.some(x => x.message === msg && x.path === sourcePath)) {
+        issues.push({ ruleId: "PM007", level: "note", path: sourcePath, message: msg });
+      }
+    };
+
+    const nodeKey = (n) => JSON.stringify(n);
+    const restrict = (cands, vals) => {
+      const out = [];
+      for (const c of cands) {
+        let rem = null;
+        let ok = true;
+        for (const [k, v] of Object.entries(vals)) {
+          if (c.remaining[k] !== undefined) {
+            if (v < c.remaining[k]) { ok = false; break; }
+            if (!rem) rem = { ...c.remaining };
+            delete rem[k];
+          }
+        }
+        if (ok) out.push(rem ? { ...c, remaining: rem } : c);
+      }
+      return out;
+    };
+
+    function buildTree(cands, baseNode) {
+      let settledAt = -1;
+      for (let i = cands.length - 1; i >= 0; i--) {
+        if (Object.keys(cands[i].remaining).length === 0) { settledAt = i; break; }
+      }
+      const fallback = settledAt >= 0 ? { type: "minecraft:model", model: cands[settledAt].model } : baseNode;
+      const rest = settledAt >= 0 ? cands.slice(settledAt + 1) : cands;
+      if (rest.length === 0) return fallback;
+
+      const activeNames = [...new Set(rest.flatMap(c => Object.keys(c.remaining)))];
+      const activeInfos = activeNames.map(infoFor);
+      const rank = (inf) => inf.legacy === "custom_model_data" ? 0 : (inf.kind === "SELECT" ? 1 : (inf.kind === "BOOLEAN" ? 2 : 3));
+      const lastIdx = (leg) => Math.max(...rest.filter(c => c.remaining[leg] !== undefined).map(c => c.index));
+      activeInfos.sort((a, b) => (rank(a) - rank(b)) || (lastIdx(b.legacy) - lastIdx(a.legacy)) || a.legacy.localeCompare(b.legacy));
+      const chosen = activeInfos[0];
+      const group = activeInfos.filter(x => x.property === chosen.property && x.kind === chosen.kind);
+
+      if (chosen.kind === "NUMERIC") {
+        const name = chosen.legacy;
+        const free = rest.filter(c => c.remaining[name] === undefined);
+        const below = buildTree(free, fallback);
+        const byThresh = new Map();
+        rest.filter(c => c.remaining[name] !== undefined).forEach(c => {
+          const t = c.remaining[name];
+          if (!byThresh.has(t)) byThresh.set(t, []);
+          byThresh.get(t).push(c);
+        });
+        const sortedT = [...byThresh.keys()].sort((a, b) => a - b);
+        const entries = [];
+        let inPlay = free;
+        let branchBase = fallback;
+        let prevKey = nodeKey(below);
+        for (const t of sortedT) {
+          const arrived = byThresh.get(t).map(c => {
+            const r = { ...c.remaining }; delete r[name];
+            return { ...c, remaining: r };
+          });
+          inPlay = [...inPlay, ...arrived].sort((a, b) => a.index - b.index);
+          let sAt = -1;
+          for (let i = inPlay.length - 1; i >= 0; i--) {
+            if (Object.keys(inPlay[i].remaining).length === 0) { sAt = i; break; }
+          }
+          if (sAt >= 0) {
+            branchBase = { type: "minecraft:model", model: inPlay[sAt].model };
+            inPlay = inPlay.slice(sAt + 1);
+          }
+          const node = buildTree(inPlay, branchBase);
+          const nk = nodeKey(node);
+          if (nk !== prevKey) {
+            entries.push({ threshold: t, model: node });
+            prevKey = nk;
+          }
+        }
+        if (entries.length === 0) return below;
+        const makeDispatch = (extra = {}) => {
+          const d = { type: "minecraft:range_dispatch", property: chosen.property };
+          if (extra.target) d.target = extra.target;
+          if (extra.source) d.source = extra.source;
+          if (chosen.period !== undefined) d.period = chosen.period;
+          if (chosen.scale !== undefined) d.scale = chosen.scale;
+          d.entries = entries;
+          d.fallback = below;
+          return d;
+        };
+        if (chosen.property === "minecraft:compass") {
+          if (shortItem === "recovery_compass") {
+            addNote("Recovery compass uses target 'recovery'.");
+            return makeDispatch({ target: "recovery" });
+          }
+          addNote("Synthesized has_component(minecraft:lodestone_tracker) condition over 'lodestone' and 'spawn' compass targets.");
+          return {
+            type: "minecraft:condition",
+            property: "minecraft:has_component",
+            component: "minecraft:lodestone_tracker",
+            on_true: makeDispatch({ target: "lodestone" }),
+            on_false: makeDispatch({ target: "spawn" })
+          };
+        }
+        if (chosen.property === "minecraft:time") {
+          addNote("Synthesized context_dimension select using 'daytime' in minecraft:overworld and 'random' elsewhere.");
+          return {
+            type: "minecraft:select",
+            property: "minecraft:context_dimension",
+            cases: [{ when: "minecraft:overworld", model: makeDispatch({ source: "daytime" }) }],
+            fallback: makeDispatch({ source: "random" })
+          };
+        }
+        return makeDispatch();
+      }
+
+      if (chosen.kind === "BOOLEAN") {
+        const tMap = {}, fMap = {};
+        group.forEach(g => { tMap[g.legacy] = 1; fMap[g.legacy] = 0; });
+        const onT = buildTree(restrict(rest, tMap), fallback);
+        const onF = buildTree(restrict(rest, fMap), fallback);
+        if (nodeKey(onT) === nodeKey(onF)) return onT;
+        return { type: "minecraft:condition", property: chosen.property, on_true: onT, on_false: onF };
+      }
+
+      group.forEach(g => {
+        if (g.property === "minecraft:trim_material") {
+          addNote("Legacy trim_type knows the 10 pre-1.21.4 materials; post-1.21.3 materials such as resin fall through to fallback.");
+        }
+      });
+      const absMap = {};
+      group.forEach(g => { absMap[g.legacy] = g.select.absentValue; });
+      const selFallback = buildTree(restrict(rest, absMap), fallback);
+      const fbKey = nodeKey(selFallback);
+      const allVals = [...new Set(group.flatMap(g => g.select.values.map(v => v[0])))];
+      const byNode = new Map();
+      for (const val of allVals) {
+        const scored = {};
+        group.forEach(g => {
+          const hit = g.select.values.find(v => v[0] === val);
+          scored[g.legacy] = hit ? hit[1] : g.select.absentValue;
+        });
+        const node = buildTree(restrict(rest, scored), fallback);
+        const nk = nodeKey(node);
+        if (nk !== fbKey) {
+          if (!byNode.has(nk)) byNode.set(nk, { node, whens: [] });
+          byNode.get(nk).whens.push(val);
+        }
+      }
+      if (byNode.size === 0) return selFallback;
+      const outSel = { type: "minecraft:select", property: chosen.select.property };
+      if (chosen.select.blockStateProperty) outSel.block_state_property = chosen.select.blockStateProperty;
+      outSel.cases = [...byNode.values()].map(x => ({ when: x.whens.length === 1 ? x.whens[0] : x.whens, model: x.node }));
+      outSel.fallback = selFallback;
+      return outSel;
+    }
+
+    const candidates = usable.map(o => ({ index: o.index, model: parseModelId(o.model).qualified, remaining: o.predicate }));
+    const tree = buildTree(candidates, { type: "minecraft:model", model: selfModel });
+    const referenced = [...new Map([...usable.map(o => parseModelId(o.model)), parseModelId(selfModel)].map(m => [m.qualified, m])).values()];
+    const cmdValues = [...new Set(usable.map(o => o.predicate.custom_model_data).filter(v => v !== undefined && v >= 0 && v === Math.floor(v)))];
+
+    return {
+      item: selfModel,
+      sourceText: text,
+      definition: JSON.stringify({ model: tree }, null, 2) + "\n",
+      issues,
+      referencedModels: referenced,
+      cmdValues,
+      sourceOverlay,
+      sourcePath
+    };
+  }
+
+  function runMigration() {
+    const configErr = document.getElementById("configError");
+    configErr.textContent = "";
+    const rangeSpec = document.getElementById("rangeInput").value.trim() || "1.21.4..26.3";
+    const overlayItemsDir = document.getElementById("overlayDirInput").value.trim() || null;
+    const stripCheckbox = document.getElementById("stripOverridesChk");
+
+    let range;
+    try {
+      range = parseRange(rangeSpec);
+      if (range.max.major < 46) throw new Error("Item model definitions exist from 1.21.4 (format 46).");
+      if (range.min.major < 46 && stripCheckbox.checked) {
+        stripCheckbox.checked = false;
+      }
+      stripCheckbox.disabled = range.min.major < 46;
+    } catch (e) {
+      configErr.textContent = e.message;
+      return;
+    }
+
+    let metaMig;
+    try {
+      metaMig = migratePackMeta(currentFiles.get("pack.mcmeta") ?? null, range.min, range.max, overlayItemsDir);
+    } catch (e) {
+      configErr.textContent = e.message;
+      return;
+    }
+
+    const issues = [...metaMig.issues];
+    const allPaths = [...currentFiles.keys(), ...binaryPassThrough.keys()];
+    const existingOverlayDirs = metaMig.validOverlayDirs.filter(d => {
+      const exists = allPaths.some(p => p.startsWith(d + "/"));
+      if (!exists && d !== overlayItemsDir) {
+        issues.push({ ruleId: "PM009", level: "warning", path: "pack.mcmeta", message: `Overlay directory '${d}' declared in pack.mcmeta does not exist in the pack.` });
+      }
+      return exists;
+    });
+
+    const conversions = [];
+    const sortedPaths = [...currentFiles.keys()].sort();
+    for (const p of sortedPaths) {
+      const rootMatch = /^assets\/([^/]+)\/models\/item\/(.+)\.json$/.exec(p);
+      if (rootMatch) {
+        const c = convertLegacyModel(rootMatch[1], rootMatch[2], currentFiles.get(p), null);
+        if (c) conversions.push(c);
+        continue;
+      }
+      for (const od of existingOverlayDirs) {
+        if (p.startsWith(od + "/assets/")) {
+          const sub = p.slice(od.length + 1);
+          const ovMatch = /^assets\/([^/]+)\/models\/item\/(.+)\.json$/.exec(sub);
+          if (ovMatch) {
+            const c = convertLegacyModel(ovMatch[1], ovMatch[2], currentFiles.get(p), od);
+            if (c) conversions.push(c);
+          }
+        }
+      }
+    }
+
+    conversions.forEach(c => issues.push(...c.issues));
+
+    conversions.forEach(c => {
+      c.referencedModels.forEach(m => {
+        const inSrcOv = c.sourceOverlay ? currentFiles.has(`${c.sourceOverlay}/${m.relativeFile}`) : false;
+        const inDstOv = overlayItemsDir ? currentFiles.has(`${overlayItemsDir}/${m.relativeFile}`) : false;
+        const inRoot = currentFiles.has(m.relativeFile);
+        const inVan = m.ns === "minecraft" && VANILLA_MODELS.has(m.path);
+        if (!inSrcOv && !inDstOv && !inRoot && !inVan) {
+          issues.push({ ruleId: "PM003", level: "error", path: c.sourcePath, message: `References ${m.qualified} but ${m.relativeFile} is not in the pack.` });
+        }
+      });
+    });
+
+    const byCmd = new Map();
+    conversions.forEach(c => {
+      c.cmdValues.forEach(v => {
+        const key = `${c.sourceOverlay || ""}::${v}`;
+        if (!byCmd.has(key)) byCmd.set(key, []);
+        byCmd.get(key).push(c);
+      });
+    });
+    for (const [key, list] of byCmd.entries()) {
+      if (list.length > 1) {
+        const val = key.split("::")[1];
+        issues.push({ ruleId: "PM006", level: "note", path: list[0].sourcePath, message: `custom_model_data ${val} is used by ${list.length} items: ${list.map(x => x.item).join(", ")}.` });
+      }
+    }
+
+    const plannedFiles = new Map();
+    conversions.filter(c => c.definition).forEach(c => {
+      const id = parseModelId(c.item);
+      const prefix = c.sourceOverlay || overlayItemsDir;
+      const base = `assets/${id.ns}/items/${id.path.replace(/^item\//, "")}.json`;
+      const rel = prefix ? `${prefix}/${base}` : base;
+      if (currentFiles.has(rel) && currentFiles.get(rel) !== c.definition) {
+        issues.push({ ruleId: "PM005", level: "warning", path: rel, message: `${rel} already exists with different content and would be overwritten.` });
+      }
+      c.targetPath = rel;
+      plannedFiles.set(rel, c.definition);
+    });
+    plannedFiles.set("pack.mcmeta", metaMig.rendered);
+
+    if (stripCheckbox.checked) {
+      conversions.forEach(c => {
+        try {
+          const obj = JSON.parse(c.sourceText);
+          delete obj.overrides;
+          plannedFiles.set(c.sourcePath, JSON.stringify(obj, null, 2) + "\n");
+        } catch (_) {}
+      });
+    }
+
+    const sarifObj = {
+      $schema: "https://json.schemastore.org/sarif-2.1.0.json",
+      version: "2.1.0",
+      runs: [{
+        tool: {
+          driver: {
+            name: "packmigrate",
+            version: "0.3.0",
+            informationUri: "https://github.com/SalyyS1/packmigrate",
+            rules: RULES.map(r => ({
+              id: r.id,
+              name: r.name,
+              shortDescription: { text: r.short },
+              fullDescription: { text: r.short },
+              defaultConfiguration: { level: r.level },
+              helpUri: `https://github.com/SalyyS1/packmigrate#${r.id.toLowerCase()}`
+            }))
+          }
+        },
+        results: issues.map(iss => ({
+          ruleId: iss.ruleId,
+          level: iss.level,
+          message: { text: iss.message },
+          locations: [{ physicalLocation: { artifactLocation: { uri: iss.path, uriBaseId: "%SRCROOT%" }, region: { startLine: 1 } } }]
+        }))
+      }]
+    };
+
+    latestPlan = { conversions: conversions.filter(c => c.definition), plannedFiles, issues, sarif: JSON.stringify(sarifObj, null, 2) + "\n", metaMig, range };
+    renderUI();
+  }
+
+  function renderUI() {
+    if (!latestPlan) return;
+    const { conversions, plannedFiles, issues, sarif, metaMig, range } = latestPlan;
+    const errs = issues.filter(i => i.level === "error").length;
+    const warns = issues.filter(i => i.level === "warning").length;
+
+    document.getElementById("mItems").textContent = String(conversions.length);
+    document.getElementById("mFiles").textContent = String(plannedFiles.size);
+    document.getElementById("mFormat").textContent = `${fmtStr(range.min)}..${fmtStr(range.max)}`;
+    document.getElementById("mIssues").textContent = `${errs} / ${warns}`;
+    document.getElementById("mRules").textContent = String(new Set(issues.map(i => i.ruleId)).size);
+
+    const listEl = document.getElementById("itemList");
+    listEl.innerHTML = "";
+    if (selectedItemIdx >= conversions.length) selectedItemIdx = 0;
+    conversions.forEach((c, idx) => {
+      const li = document.createElement("li");
+      if (idx === selectedItemIdx) li.className = "active";
+      li.textContent = (c.sourceOverlay ? `[${c.sourceOverlay}] ` : "") + c.item;
+      li.onclick = () => { selectedItemIdx = idx; renderUI(); };
+      listEl.appendChild(li);
+    });
+
+    const cur = conversions[selectedItemIdx];
+    document.getElementById("srcTitle").textContent = cur ? `Legacy Source (${cur.sourcePath})` : "Legacy Source";
+    document.getElementById("dstTitle").textContent = cur ? `Generated Definition (${cur.targetPath})` : "Generated Definition";
+    document.getElementById("srcCode").textContent = cur ? cur.sourceText : "// No legacy models with overrides found.";
+    document.getElementById("dstCode").textContent = cur ? cur.definition : "// Nothing generated.";
+
+    document.getElementById("mcmetaIn").textContent = currentFiles.get("pack.mcmeta") || "// (no pack.mcmeta in input)";
+    document.getElementById("mcmetaOut").textContent = metaMig.rendered;
+
+    const tbody = document.getElementById("issuesBody");
+    tbody.innerHTML = "";
+    if (issues.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted);">Zero issues detected.</td></tr>`;
+    } else {
+      issues.forEach(iss => {
+        const tr = document.createElement("tr");
+        const cls = iss.level === "error" ? "pill-error" : (iss.level === "warning" ? "pill-warning" : "pill-note");
+        tr.innerHTML = `<td><code>${iss.ruleId}</code></td><td><span class="pill ${cls}">${iss.level}</span></td><td><code>${escapeHtml(iss.path)}</code></td><td>${escapeHtml(iss.message)}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+    document.getElementById("sarifPreview").textContent = sarif;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;" }[c]));
+  }
+
+  // Minimal pure-JS ZIP reader (Store + Deflate via DecompressionStream) & deterministic Store ZIP writer
+  async function readZipFile(file) {
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    const view = new DataView(buf);
+    let eocd = -1;
+    for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
+      if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error("Not a valid .zip archive (missing EOCD).");
+    const totalEntries = view.getUint16(eocd + 10, true);
+    let cdOffset = view.getUint32(eocd + 16, true);
+    const textMap = new Map();
+    const binMap = new Map();
+    const decoder = new TextDecoder("utf-8");
+
+    for (let e = 0; e < totalEntries; e++) {
+      if (view.getUint32(cdOffset, true) !== 0x02014b50) break;
+      const method = view.getUint16(cdOffset + 10, true);
+      const compSize = view.getUint32(cdOffset + 20, true);
+      const nameLen = view.getUint16(cdOffset + 28, true);
+      const extraLen = view.getUint16(cdOffset + 30, true);
+      const commentLen = view.getUint16(cdOffset + 32, true);
+      const lfhOffset = view.getUint32(cdOffset + 42, true);
+      const name = decoder.decode(bytes.subarray(cdOffset + 46, cdOffset + 46 + nameLen));
+      cdOffset += 46 + nameLen + extraLen + commentLen;
+      if (name.endsWith("/") || name.includes("..")) continue;
+
+      const lfhNameLen = view.getUint16(lfhOffset + 26, true);
+      const lfhExtraLen = view.getUint16(lfhOffset + 28, true);
+      const dataStart = lfhOffset + 30 + lfhNameLen + lfhExtraLen;
+      const rawSlice = bytes.subarray(dataStart, dataStart + compSize);
+
+      let outBytes;
+      if (method === 0) {
+        outBytes = rawSlice;
+      } else if (method === 8) {
+        const ds = new DecompressionStream("deflate-raw");
+        const writer = ds.writable.getWriter();
+        writer.write(rawSlice);
+        writer.close();
+        const ab = await new Response(ds.readable).arrayBuffer();
+        outBytes = new Uint8Array(ab);
+      } else {
+        continue;
+      }
+
+      if (name === "pack.mcmeta" || name.endsWith(".json")) {
+        textMap.set(name, decoder.decode(outBytes));
+      } else {
+        binMap.set(name, outBytes);
+      }
+    }
+    return { textMap, binMap };
+  }
+
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+
+  function crc32(bytes) {
+    let c = 0xffffffff;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  }
+
+  function buildDeterministicZip(entriesMap) {
+    const encoder = new TextEncoder();
+    const sortedNames = [...entriesMap.keys()].sort();
+    const localParts = [];
+    const centralParts = [];
+    let offset = 0;
+
+    for (const name of sortedNames) {
+      const nameBytes = encoder.encode(name);
+      const val = entriesMap.get(name);
+      const data = typeof val === "string" ? encoder.encode(val) : val;
+      const crc = crc32(data);
+
+      const lfh = new Uint8Array(30 + nameBytes.length);
+      const lv = new DataView(lfh.buffer);
+      lv.setUint32(0, 0x04034b50, true);
+      lv.setUint16(4, 20, true);
+      lv.setUint16(8, 0, true);
+      lv.setUint16(10, 0, true);
+      lv.setUint16(12, 0x0021, true); // 1980-01-01 deterministic DOS date
+      lv.setUint32(14, crc, true);
+      lv.setUint32(18, data.length, true);
+      lv.setUint32(22, data.length, true);
+      lv.setUint16(26, nameBytes.length, true);
+      lfh.set(nameBytes, 30);
+
+      const cdh = new Uint8Array(46 + nameBytes.length);
+      const cv = new DataView(cdh.buffer);
+      cv.setUint32(0, 0x02014b50, true);
+      cv.setUint16(4, 20, true);
+      cv.setUint16(6, 20, true);
+      cv.setUint16(12, 0, true);
+      cv.setUint16(14, 0x0021, true);
+      cv.setUint32(16, crc, true);
+      cv.setUint32(20, data.length, true);
+      cv.setUint32(24, data.length, true);
+      cv.setUint16(28, nameBytes.length, true);
+      cv.setUint32(42, offset, true);
+      cdh.set(nameBytes, 46);
+
+      localParts.push(lfh, data);
+      centralParts.push(cdh);
+      offset += lfh.length + data.length;
+    }
+
+    const cdSize = centralParts.reduce((s, a) => s + a.length, 0);
+    const eocd = new Uint8Array(22);
+    const ev = new DataView(eocd.buffer);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(8, sortedNames.length, true);
+    ev.setUint16(10, sortedNames.length, true);
+    ev.setUint32(12, cdSize, true);
+    ev.setUint32(16, offset, true);
+
+    const total = offset + cdSize + 22;
+    const out = new Uint8Array(total);
+    let pos = 0;
+    for (const p of [...localParts, ...centralParts, eocd]) { out.set(p, pos); pos += p.length; }
+    return out;
+  }
+
+  function loadPreset(key) {
+    currentFiles = new Map(Object.entries(PRESETS[key]));
+    binaryPassThrough = new Map();
+    selectedItemIdx = 0;
+    if (key === "overlay") document.getElementById("rangeInput").value = "1.20.1..26.3";
+    runMigration();
+  }
+
+  document.querySelectorAll(".preset-btn").forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll(".preset-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      loadPreset(btn.dataset.preset);
+    };
+  });
+
+  document.getElementById("rangePreset").onchange = (e) => {
+    document.getElementById("rangeInput").value = e.target.value;
+    runMigration();
+  };
+  document.getElementById("rangeInput").oninput = runMigration;
+  document.getElementById("overlayDirInput").oninput = runMigration;
+  document.getElementById("stripOverridesChk").onchange = runMigration;
+
+  document.querySelectorAll(".tab").forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      tab.classList.add("active");
+      ["trees", "mcmeta", "diagnostics", "sandbox"].forEach(id => {
+        document.getElementById("tab-" + id).classList.toggle("hidden", id !== tab.dataset.tab);
+      });
+    };
+  });
+
+  const dz = document.getElementById("dropzone");
+  const zipIn = document.getElementById("zipInput");
+  dz.onclick = () => zipIn.click();
+  dz.ondragover = (e) => { e.preventDefault(); dz.classList.add("dragover"); };
+  dz.ondragleave = () => dz.classList.remove("dragover");
+  dz.ondrop = async (e) => {
+    e.preventDefault();
+    dz.classList.remove("dragover");
+    if (e.dataTransfer.files[0]) await handleZipUpload(e.dataTransfer.files[0]);
+  };
+  zipIn.onchange = async (e) => {
+    if (e.target.files[0]) await handleZipUpload(e.target.files[0]);
+  };
+
+  async function handleZipUpload(file) {
+    try {
+      const { textMap, binMap } = await readZipFile(file);
+      currentFiles = textMap;
+      binaryPassThrough = binMap;
+      selectedItemIdx = 0;
+      document.querySelectorAll(".preset-btn").forEach(b => b.classList.remove("active"));
+      runMigration();
+      document.getElementById("shaText").textContent = `Loaded ${file.name} (${textMap.size} JSON/mcmeta files, ${binMap.size} binary assets).`;
+    } catch (err) {
+      document.getElementById("configError").textContent = err.message;
+    }
+  }
+
+  document.getElementById("downloadZipBtn").onclick = async () => {
+    if (!latestPlan) return;
+    const merged = new Map([...binaryPassThrough, ...currentFiles, ...latestPlan.plannedFiles]);
+    const zipBytes = buildDeterministicZip(merged);
+    const hashBuf = await crypto.subtle.digest("SHA-1", zipBytes);
+    const sha1 = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    document.getElementById("shaText").textContent = `resource-pack-sha1=${sha1}  (${zipBytes.length} bytes, byte-deterministic)`;
+    const blob = new Blob([zipBytes], { type: "application/zip" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "migrated-pack.zip";
+    a.click();
+  };
+
+  document.getElementById("downloadSarifBtn").onclick = () => {
+    if (!latestPlan) return;
+    const blob = new Blob([latestPlan.sarif], { type: "application/sarif+json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "packmigrate.sarif";
+    a.click();
+  };
+
+  const sandboxIn = document.getElementById("sandboxInput");
+  const sandboxItem = document.getElementById("sandboxItem");
+  sandboxIn.value = PRESETS.fallback["assets/minecraft/models/item/paper.json"];
+  function updateSandbox() {
+    const res = convertLegacyModel("minecraft", sandboxItem.value.trim() || "paper", sandboxIn.value, null);
+    document.getElementById("sandboxOutput").textContent = res && res.definition
+      ? res.definition
+      : JSON.stringify(res ? res.issues : { note: "Add at least one entry under overrides[]" }, null, 2);
+  }
+  sandboxIn.oninput = updateSandbox;
+  sandboxItem.oninput = updateSandbox;
+
+  loadPreset("fallback");
+  updateSandbox();
+})();
+</script>
+</body>
+</html>

@@ -8,6 +8,7 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.path
 import com.salyvn.packmigrate.core.PackFormats
+import com.salyvn.packmigrate.core.PackMeta
 import com.salyvn.packmigrate.core.PackMetaException
 import com.salyvn.packmigrate.core.ZipArtifact
 import com.salyvn.packmigrate.core.ZipPacks
@@ -15,6 +16,7 @@ import com.salyvn.packmigrate.migrate.IssueLevel
 import com.salyvn.packmigrate.migrate.JsonMigrationReport
 import com.salyvn.packmigrate.migrate.MigrationPlan
 import com.salyvn.packmigrate.migrate.PackMigration
+import com.salyvn.packmigrate.migrate.SarifReport
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -24,23 +26,23 @@ import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
 
 /**
- * The one command.
- *
- * Default is a plan: what would be written, and every issue, without touching the pack. `--write` applies
- * it in place (for directories), into `--out`, and/or into `--zip`. The legacy model files are left alone
- * unless `--strip-overrides` is given, so a hybrid dual-era pack (`--versions 1.20.1..26.2`) continues to
- * serve 1.20.1-1.21.3 clients alongside 1.21.4+ clients.
+ * CLI entrypoint for planning, auditing, and applying 1.21.4 through 26.3+ resource pack migrations.
  */
 class MigrateCommand : CliktCommand(name = "packmigrate") {
 
     override fun help(context: Context) =
-        "Convert legacy CustomModelData overrides in a pack directory or .zip into 1.21.4+ item model definitions."
+        "Convert legacy CustomModelData overrides in a pack directory or .zip into 1.21.4..26.3+ item model definitions."
 
     private val pack by argument("pack", help = "Pack directory or .zip archive").path(mustExist = true)
 
     private val versions by option(
         "--versions",
-        help = "Range pack.mcmeta should claim, e.g. 1.21.4..26.2 or hybrid 1.20.1..26.2 (default: 1.21.4..newest)",
+        help = "Range pack.mcmeta should claim, e.g. 1.21.4..26.3, 1.20.1..26.3, or 84..[97,1] (default: 1.21.4..newest)",
+    )
+
+    private val overlayItems by option(
+        "--overlay-items",
+        help = "Write migrated items/*.json into <dir>/assets/<ns>/items/ and register <dir> in pack.mcmeta overlays.entries",
     )
 
     private val write by option("--write", help = "Apply migration instead of only printing the plan").flag()
@@ -50,6 +52,11 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
     private val zip by option(
         "--zip",
         help = "Write a byte-deterministic migrated .zip archive and print its resource-pack-sha1 digest",
+    ).path()
+
+    private val sarif by option(
+        "--sarif",
+        help = "Write an OASIS SARIF v2.1.0 migration diagnostic report to this file",
     ).path()
 
     private val force by option("--force", help = "Overwrite an existing --zip archive").flag()
@@ -90,6 +97,11 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                     "because pre-1.21.4 clients still read legacy overrides. Drop --strip-overrides for a hybrid pack.",
             )
         }
+        overlayItems?.let { dir ->
+            if (!PackMeta.isValidOverlayDirectory(dir)) {
+                fail("--overlay-items '$dir' is invalid; Minecraft requires lowercase [a-z0-9_-]+ with no path separators or dots.")
+            }
+        }
 
         val applying = write || zip != null
         val isZipInput = pack.isRegularFile()
@@ -117,7 +129,7 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                 pack
             }
 
-            val migration = PackMigration(workingInput, min, max)
+            val migration = PackMigration(workingInput, min, max, overlayItemsDir = overlayItems)
             val plan = migration.plan(stripOverrides)
 
             var zipArtifact: ZipArtifact? = null
@@ -138,6 +150,11 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                 }
             }
 
+            sarif?.let { sarifPath ->
+                sarifPath.parent?.let { Files.createDirectories(it) }
+                Files.writeString(sarifPath, SarifReport.render(plan))
+            }
+
             val reportedOutDir = if (applying && tempStaged == null) destinationDir else out
 
             if (json) {
@@ -150,6 +167,7 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                         applied = applying,
                         outputDir = reportedOutDir,
                         zipArtifact = zipArtifact,
+                        overlayItemsDir = overlayItems,
                     ),
                 )
             } else {
@@ -190,11 +208,13 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                 values.size <= 6 -> "custom_model_data ${values.joinToString(", ")}"
                 else -> "custom_model_data ${values.first()}..${values.last()} (${values.size} values)"
             }
-            echo("   ${conversion.item.padEnd(40)} $summary")
+            val label = if (conversion.sourceOverlay != null) "[${conversion.sourceOverlay}] ${conversion.item}" else conversion.item
+            echo("   ${label.padEnd(40)} $summary")
         }
         val toWrite = plan.files.filter { it.relative != "pack.mcmeta" }
+        val targetFolder = overlayItems?.let { "$it/assets/<ns>/items/" } ?: "assets/<ns>/items/"
         echo("")
-        echo("   ${toWrite.size} definition(s) under assets/<ns>/items/, plus pack.mcmeta")
+        echo("   ${toWrite.size} definition(s) under $targetFolder, plus pack.mcmeta")
         if (plan.strippedOverrides.isNotEmpty()) {
             echo("   ${plan.strippedOverrides.size} legacy file(s) would lose their overrides list")
         }
@@ -203,7 +223,7 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
             echo("")
             plan.issues.forEach { issue ->
                 val where = issue.overrideIndex?.let { "${issue.item} overrides[$it]" } ?: issue.item
-                echo("   ${issue.level.name.lowercase().padEnd(7)} $where")
+                echo("   ${issue.level.name.lowercase().padEnd(7)} [${issue.rule.id}] $where")
                 echo("           ${issue.message}")
             }
         }

@@ -6,11 +6,6 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
-/**
- * Each test hands the converter a legacy file and checks the *shape* of the tree, because the shape is the
- * contract: the vanilla definitions are what the client's own migration produced for these exact items, so
- * matching them is how correctness is defined here.
- */
 class ConverterTest {
 
     private fun convert(item: String, json: String) =
@@ -62,7 +57,6 @@ class ConverterTest {
             select.cases.associate { it.whenValues.single() to (it.model as ItemModelNode.Model).model },
         )
 
-        // With nothing loaded the crossbow behaves like a bow: a using_item condition over crossbow/pull.
         val idle = select.fallback as ItemModelNode.Condition
         assertEquals("minecraft:using_item", idle.property)
         val range = idle.onTrue as ItemModelNode.RangeDispatch
@@ -86,8 +80,6 @@ class ConverterTest {
         assertEquals("minecraft:custom_model_data", range.property)
         assertEquals(listOf(1.0, 2.0, 3.0), range.entries.map { it.threshold })
 
-        // At value 3 the legacy list still matched the value-2 override for a right-handed player, so the
-        // select's fallback is the map fragment, not the paper itself.
         val select = range.entries.last().model as ItemModelNode.Select
         assertEquals("minecraft:main_hand", select.property)
         assertEquals(listOf("left"), select.cases.single().whenValues)
@@ -108,12 +100,10 @@ class ConverterTest {
         val select = root as ItemModelNode.Select
         assertEquals("minecraft:trim_material", select.property)
         val byCase = select.cases.flatMap { case -> case.whenValues.map { it to (case.model as ItemModelNode.Model).model } }.toMap()
-        // 0.2 catches iron (0.2) up to lapis (0.9)... until 0.8 takes over at diamond.
         assertEquals("minecraft:item/diamond_chestplate_iron_trim", byCase["minecraft:iron"])
         assertEquals("minecraft:item/diamond_chestplate_iron_trim", byCase["minecraft:gold"])
         assertEquals("minecraft:item/diamond_chestplate_diamond_trim", byCase["minecraft:diamond"])
         assertEquals("minecraft:item/diamond_chestplate_diamond_trim", byCase["minecraft:amethyst"])
-        // Quartz is 0.1, below the lowest threshold, so it shows the untrimmed model: no case for it.
         assertTrue("minecraft:quartz" !in byCase)
         assertEquals(ItemModelNode.Model("minecraft:item/diamond_chestplate"), select.fallback)
     }
@@ -179,8 +169,7 @@ class ConverterTest {
             "stick",
             """{"overrides": [{"predicate": {"glowing": 1}, "model": "item/stick_glow"}]}""",
         )
-        assertTrue(conversion.issues.any { it.level == IssueLevel.ERROR && "glowing" in it.message })
-        // The override is dropped from the tree, not silently kept.
+        assertTrue(conversion.issues.any { it.level == IssueLevel.ERROR && it.rule == MigrationRule.PM002 && "glowing" in it.message })
         assertEquals(ItemModelNode.Model("minecraft:item/stick"), conversion.definition!!.model)
     }
 
@@ -195,8 +184,24 @@ class ConverterTest {
             ]}
             """,
         )
-        assertTrue(conversion.issues.any { it.level == IssueLevel.WARNING && "declared 2 times" in it.message })
+        assertTrue(conversion.issues.any { it.level == IssueLevel.WARNING && it.rule == MigrationRule.PM004 && "declared 2 times" in it.message })
         val range = conversion.definition!!.model as ItemModelNode.RangeDispatch
         assertEquals(ItemModelNode.Model("myserver:item/second"), range.entries.single().model)
+    }
+
+    @Test
+    fun `negative or fractional custom_model_data triggers PM011 warning`() {
+        val conversion = convert(
+            "paper",
+            """
+            {"overrides": [
+              {"predicate": {"custom_model_data": -2}, "model": "myserver:item/neg"},
+              {"predicate": {"custom_model_data": 1.5}, "model": "myserver:item/frac"}
+            ]}
+            """,
+        )
+        val pm011 = conversion.issues.filter { it.rule == MigrationRule.PM011 }
+        assertEquals(2, pm011.size)
+        assertTrue(conversion.customModelDataValues.isEmpty())
     }
 }
