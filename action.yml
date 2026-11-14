@@ -1,0 +1,42 @@
+name: 'Packmigrate 1.21.4+ Item Model Migrator'
+description: 'Migrate legacy Minecraft CustomModelData resource pack overrides (directories or .zip) to 1.21.4+ item model definitions.'
+author: 'Salyvn'
+branding:
+  icon: 'refresh-cw'
+  color: 'purple'
+
+inputs:
+  args:
+    description: 'Arguments passed to packmigrate (for example: "legacy-pack.zip --zip migrated-pack.zip --strict")'
+    required: true
+  version:
+    description: 'Packmigrate release tag to download (defaults to v0.2.0)'
+    required: false
+    default: 'v0.2.0'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Java 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21'
+
+    - name: Download and run packmigrate
+      shell: bash
+      env:
+        PACKMIGRATE_VERSION: ${{ inputs.version }}
+        PACKMIGRATE_ARGS: ${{ inputs.args }}
+      run: |
+        set -euo pipefail
+        VER="${PACKMIGRATE_VERSION#v}"
+        CACHE_DIR="${RUNNER_TEMP:-/tmp}/packmigrate-${VER}"
+        mkdir -p "$CACHE_DIR"
+        JAR="$CACHE_DIR/packmigrate.jar"
+        if [ ! -f "$JAR" ]; then
+          curl -fsSL -o "$JAR" \
+            "https://github.com/SalyyS1/packmigrate/releases/download/v${VER}/packmigrate.jar"
+        fi
+        # shellcheck disable=SC2086
+        java -jar "$JAR" $PACKMIGRATE_ARGS

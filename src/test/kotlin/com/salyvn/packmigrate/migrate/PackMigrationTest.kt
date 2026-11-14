@@ -2,8 +2,17 @@ package com.salyvn.packmigrate.migrate
 
 import com.salyvn.packmigrate.core.PackFormats
 import com.salyvn.packmigrate.core.VanillaModels
+import com.salyvn.packmigrate.core.ZipPacks
+import com.salyvn.packmigrate.cli.MigrateCommand
+import com.github.ajalt.clikt.core.ProgramResult
+import com.github.ajalt.clikt.core.parse
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.assertThrows
+import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.readText
@@ -88,5 +97,69 @@ class PackMigrationTest {
     fun `the vanilla model list is really bundled`() {
         assertTrue(VanillaModels.has("item/diamond_sword"))
         assertTrue(VanillaModels.has("item/bow_pulling_2"))
+    }
+
+    @Test
+    fun `migrates a zip pack into a byte-reproducible zip and supports hybrid 1_20_1 to 26_2 ranges`(@TempDir dir: Path) {
+        val inputZip = dir.resolve("legacy.zip")
+        ZipPacks.writeDeterministicZip(Path.of("src/test/resources/legacypack"), inputZip)
+
+        // Remove diamond_sword's missing void_sword from a clean copy so CLI exits 0 on hybrid migration
+        val cleanSrc = dir.resolve("clean-src")
+        ZipPacks.extractSafely(inputZip, cleanSrc)
+        Files.delete(cleanSrc.resolve("assets/minecraft/models/item/diamond_sword.json"))
+        val cleanZip = dir.resolve("clean-legacy.zip")
+        ZipPacks.writeDeterministicZip(cleanSrc, cleanZip)
+
+        val outZip1 = dir.resolve("migrated-1.zip")
+        val outZip2 = dir.resolve("migrated-2.zip")
+        MigrateCommand().parse(
+            listOf(
+                cleanZip.toString(),
+                "--versions",
+                "1.20.1..26.2",
+                "--zip",
+                outZip1.toString(),
+                "--json",
+            ),
+        )
+        MigrateCommand().parse(
+            listOf(
+                cleanZip.toString(),
+                "--versions",
+                "1.20.1..26.2",
+                "--zip",
+                outZip2.toString(),
+                "--json",
+            ),
+        )
+        assertTrue(Files.readAllBytes(outZip1).contentEquals(Files.readAllBytes(outZip2)))
+
+        // --strip-overrides with a pre-1.21.4 floor is rejected with exit code 2
+        val bad = assertThrows<ProgramResult> {
+            MigrateCommand().parse(
+                listOf(
+                    cleanZip.toString(),
+                    "--versions",
+                    "1.20.1..26.2",
+                    "--strip-overrides",
+                    "--zip",
+                    dir.resolve("bad.zip").toString(),
+                ),
+            )
+        }
+        assertEquals(2, bad.statusCode)
+
+        val reportStr = JsonMigrationReport.render(
+            pack = cleanZip,
+            plan = plan(),
+            minFormat = com.salyvn.packmigrate.core.PackFormat(15),
+            maxFormat = com.salyvn.packmigrate.core.PackFormat(88),
+            applied = false,
+            outputDir = null,
+            zipArtifact = null,
+        )
+        val parsed = Json.parseToJsonElement(reportStr).jsonObject
+        assertEquals("4", parsed["itemsMigrated"]!!.jsonPrimitive.content)
     }
 }

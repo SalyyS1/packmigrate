@@ -9,45 +9,59 @@ import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.path
 import com.salyvn.packmigrate.core.PackFormats
 import com.salyvn.packmigrate.core.PackMetaException
+import com.salyvn.packmigrate.core.ZipArtifact
+import com.salyvn.packmigrate.core.ZipPacks
 import com.salyvn.packmigrate.migrate.IssueLevel
+import com.salyvn.packmigrate.migrate.JsonMigrationReport
 import com.salyvn.packmigrate.migrate.MigrationPlan
 import com.salyvn.packmigrate.migrate.PackMigration
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
+import kotlin.io.path.isRegularFile
 
 /**
  * The one command.
  *
  * Default is a plan: what would be written, and every issue, without touching the pack. `--write` applies
- * it in place, or into `--out` if you would rather keep the original. The legacy model files are left
- * alone either way unless `--strip-overrides` is given, because a pack that still has to serve a 1.21.3
- * client needs them and a definition that references them does not mind.
+ * it in place (for directories), into `--out`, and/or into `--zip`. The legacy model files are left alone
+ * unless `--strip-overrides` is given, so a hybrid dual-era pack (`--versions 1.20.1..26.2`) continues to
+ * serve 1.20.1-1.21.3 clients alongside 1.21.4+ clients.
  */
 class MigrateCommand : CliktCommand(name = "packmigrate") {
 
     override fun help(context: Context) =
-        "Convert CustomModelData overrides into 1.21.4+ item model definitions, and say what could not be converted."
+        "Convert legacy CustomModelData overrides in a pack directory or .zip into 1.21.4+ item model definitions."
 
-    private val pack by argument("pack", help = "Pack directory").path(mustExist = true)
+    private val pack by argument("pack", help = "Pack directory or .zip archive").path(mustExist = true)
 
     private val versions by option(
         "--versions",
-        help = "Range pack.mcmeta should claim, e.g. 1.21.4..26.2 (default: 1.21.4 to the newest known release)",
+        help = "Range pack.mcmeta should claim, e.g. 1.21.4..26.2 or hybrid 1.20.1..26.2 (default: 1.21.4..newest)",
     )
 
-    private val write by option("--write", help = "Write the files instead of listing them").flag()
+    private val write by option("--write", help = "Apply migration instead of only printing the plan").flag()
 
-    private val out by option("--out", help = "Write into a copy here instead of in place").path()
+    private val out by option("--out", help = "Write migrated pack directory to this path instead of in place").path()
+
+    private val zip by option(
+        "--zip",
+        help = "Write a byte-deterministic migrated .zip archive and print its resource-pack-sha1 digest",
+    ).path()
+
+    private val force by option("--force", help = "Overwrite an existing --zip archive").flag()
 
     private val stripOverrides by option(
         "--strip-overrides",
-        help = "Also remove the overrides list from each legacy model file",
+        help = "Also remove the overrides list from each legacy model file (1.21.4+ only)",
     ).flag()
 
     private val strict by option("--strict", help = "Exit 1 on warnings too").flag()
+
+    private val json by option("--json", help = "Emit machine-readable JSON migration report to stdout").flag()
 
     override fun run() {
         try {
@@ -62,27 +76,108 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
     }
 
     private fun execute() {
-        if (!pack.isDirectory()) fail("$pack is not a directory. Unzip the pack first.")
+        if (!pack.isDirectory() && !pack.isRegularFile()) {
+            fail("$pack is neither a pack directory nor a .zip archive.")
+        }
         val (min, max) = PackFormats.parseRange(versions ?: "1.21.4..${PackFormats.newestRelease}")
-        if (min.major < PackFormats.formatOf("1.21.4")) {
-            fail("Item model definitions exist from 1.21.4 (format 46); a range starting at $min cannot use them.")
+        val format1214 = PackFormats.formatOf("1.21.4")
+        if (max.major < format1214) {
+            fail("Item model definitions exist from 1.21.4 (format 46); a range ending at $max never uses them.")
+        }
+        if (stripOverrides && min.major < format1214) {
+            fail(
+                "--strip-overrides cannot be combined with a range starting at $min (below 1.21.4 / format 46), " +
+                    "because pre-1.21.4 clients still read legacy overrides. Drop --strip-overrides for a hybrid pack.",
+            )
         }
 
-        val plan = PackMigration(pack, min, max).plan(stripOverrides)
-        report(plan)
-
-        if (write) {
-            val destination = out ?: pack
-            if (out != null) copyTree(pack, destination)
-            PackMigration(pack, min, max).apply(plan, destination)
-            echo("")
-            echo("Wrote ${plan.files.size} file(s)${if (plan.strippedOverrides.isNotEmpty()) " and stripped ${plan.strippedOverrides.size} override list(s)" else ""} to $destination")
-        } else if (plan.itemsMigrated > 0) {
-            echo("")
-            echo("Nothing written. Pass --write to apply, or --write --out <dir> to keep the original.")
+        val applying = write || zip != null
+        val isZipInput = pack.isRegularFile()
+        if (applying && isZipInput && out == null && zip == null) {
+            fail("$pack is a .zip archive; pass --zip <migrated.zip> or --out <dir> when applying --write.")
+        }
+        val zipTarget = zip
+        if (applying && zipTarget != null && zipTarget.exists() && !force) {
+            fail("$zipTarget already exists. Pass --force to overwrite it.")
         }
 
-        if (plan.errors > 0 || (strict && plan.warnings > 0)) throw ProgramResult(1)
+        val tempExtracted = if (isZipInput) Files.createTempDirectory("packmigrate-in-") else null
+        val tempStaged = if (applying && out == null && zipTarget != null) {
+            Files.createTempDirectory("packmigrate-out-")
+        } else {
+            null
+        }
+
+        try {
+            val workingInput = if (tempExtracted != null) {
+                ZipPacks.extractSafely(pack, tempExtracted)
+                tempExtracted
+            } else {
+                pack
+            }
+
+            val migration = PackMigration(workingInput, min, max)
+            val plan = migration.plan(stripOverrides)
+
+            var zipArtifact: ZipArtifact? = null
+            val destinationDir: Path? = when {
+                !applying -> null
+                out != null -> out
+                tempStaged != null -> tempStaged
+                else -> workingInput
+            }
+
+            if (applying && destinationDir != null) {
+                if (destinationDir != workingInput) {
+                    copyTree(workingInput, destinationDir)
+                }
+                migration.apply(plan, destinationDir)
+                if (zipTarget != null) {
+                    zipArtifact = ZipPacks.writeDeterministicZip(destinationDir, zipTarget)
+                }
+            }
+
+            val reportedOutDir = if (applying && tempStaged == null) destinationDir else out
+
+            if (json) {
+                echo(
+                    JsonMigrationReport.render(
+                        pack = pack,
+                        plan = plan,
+                        minFormat = min,
+                        maxFormat = max,
+                        applied = applying,
+                        outputDir = reportedOutDir,
+                        zipArtifact = zipArtifact,
+                    ),
+                )
+            } else {
+                report(plan)
+                if (applying) {
+                    echo("")
+                    val strippedNote = if (plan.strippedOverrides.isNotEmpty()) {
+                        " and stripped ${plan.strippedOverrides.size} override list(s)"
+                    } else {
+                        ""
+                    }
+                    if (reportedOutDir != null) {
+                        echo("Wrote ${plan.files.size} file(s)$strippedNote to $reportedOutDir")
+                    }
+                    if (zipArtifact != null) {
+                        echo("Zipped migrated pack to ${zipArtifact.path} (${zipArtifact.sizeBytes} bytes)")
+                        echo("resource-pack-sha1=${zipArtifact.sha1}")
+                    }
+                } else if (plan.itemsMigrated > 0) {
+                    echo("")
+                    echo("Nothing written. Pass --write to apply, --write --out <dir>, or --zip <migrated.zip>.")
+                }
+            }
+
+            if (plan.errors > 0 || (strict && plan.warnings > 0)) throw ProgramResult(1)
+        } finally {
+            tempExtracted?.toFile()?.deleteRecursively()
+            tempStaged?.toFile()?.deleteRecursively()
+        }
     }
 
     private fun report(plan: MigrationPlan) {
@@ -99,7 +194,9 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
         val toWrite = plan.files.filter { it.relative != "pack.mcmeta" }
         echo("")
         echo("   ${toWrite.size} definition(s) under assets/<ns>/items/, plus pack.mcmeta")
-        if (plan.strippedOverrides.isNotEmpty()) echo("   ${plan.strippedOverrides.size} legacy file(s) would lose their overrides list")
+        if (plan.strippedOverrides.isNotEmpty()) {
+            echo("   ${plan.strippedOverrides.size} legacy file(s) would lose their overrides list")
+        }
 
         if (plan.issues.isNotEmpty()) {
             echo("")
