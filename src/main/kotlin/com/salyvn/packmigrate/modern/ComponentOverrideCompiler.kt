@@ -1,6 +1,5 @@
 package com.salyvn.packmigrate.modern
 
-import com.salyvn.packmigrate.core.Json
 import com.salyvn.packmigrate.migrate.Issue
 import com.salyvn.packmigrate.migrate.IssueLevel
 import com.salyvn.packmigrate.migrate.MigrationRule
@@ -27,7 +26,7 @@ data class TreeOptimizationResult(
 )
 
 /**
- * Compiles modern component predicates and optimizes item model dispatch trees (PM014, PM015).
+ * Compiles modern 1.21.4..26.3 component predicates, tint sources, and composite item layers (PM014, PM015, PM018).
  */
 object ComponentOverrideCompiler {
 
@@ -99,6 +98,12 @@ object ComponentOverrideCompiler {
         "minecraft:use_cooldown",
         "minecraft:use_remainder",
         "minecraft:damage_resistant",
+        "minecraft:weapon",
+        "minecraft:blocks_attacks",
+        "minecraft:break_sound",
+        "minecraft:provides_banner_patterns",
+        "minecraft:provides_trim_material",
+        "minecraft:tooltip_display",
     )
 
     fun validateComponentId(id: String): Boolean {
@@ -109,6 +114,130 @@ object ComponentOverrideCompiler {
     fun isKnownComponent(id: String): Boolean {
         val normalized = if (!id.contains(':')) "minecraft:$id" else id
         return KNOWN_VANILLA_COMPONENTS.contains(normalized)
+    }
+
+    /**
+     * Parses a JSON array of tint specifications into [TintSource] instances, reporting PM018 on codec errors.
+     */
+    fun parseTints(
+        element: JsonElement?,
+        itemPath: String,
+        overrideIndex: Int?,
+        issues: MutableList<Issue>,
+    ): List<TintSource> {
+        if (element == null) return emptyList()
+        if (element !is JsonArray) {
+            issues += Issue(
+                level = IssueLevel.ERROR,
+                item = itemPath,
+                overrideIndex = overrideIndex,
+                message = "Field 'tints' must be a JSON array of tint source objects.",
+                rule = MigrationRule.PM018,
+                path = itemPath,
+            )
+            return emptyList()
+        }
+        val out = mutableListOf<TintSource>()
+        for (raw in element) {
+            val obj = raw as? JsonObject
+            if (obj == null) {
+                issues += Issue(
+                    level = IssueLevel.ERROR,
+                    item = itemPath,
+                    overrideIndex = overrideIndex,
+                    message = "Tint source entry must be a JSON object.",
+                    rule = MigrationRule.PM018,
+                    path = itemPath,
+                )
+                continue
+            }
+            val rawType = (obj["type"] as? JsonPrimitive)?.contentOrNull ?: ""
+            val normType = if (!rawType.contains(':') && rawType.isNotEmpty()) "minecraft:$rawType" else rawType
+            when (normType) {
+                "minecraft:constant" -> {
+                    val v = parsePackedColor(obj["value"], itemPath, overrideIndex, issues)
+                    if (v != null) out += TintSource.Constant(v)
+                }
+                "minecraft:dye" -> {
+                    val def = if ("default" in obj) parsePackedColor(obj["default"], itemPath, overrideIndex, issues) else -6265536
+                    if (def != null) out += TintSource.Dye(def)
+                }
+                "minecraft:custom_model_data" -> {
+                    val idx = (obj["index"] as? JsonPrimitive)?.intOrNull ?: 0
+                    if (idx < 0) {
+                        issues += Issue(
+                            level = IssueLevel.ERROR,
+                            item = itemPath,
+                            overrideIndex = overrideIndex,
+                            message = "custom_model_data tint source index ($idx) cannot be negative.",
+                            rule = MigrationRule.PM018,
+                            path = itemPath,
+                        )
+                        continue
+                    }
+                    val def = if ("default" in obj) parsePackedColor(obj["default"], itemPath, overrideIndex, issues) else -1
+                    if (def != null) out += TintSource.CustomModelData(idx, def)
+                }
+                "minecraft:potion" -> {
+                    val def = if ("default" in obj) parsePackedColor(obj["default"], itemPath, overrideIndex, issues) else -13083194
+                    if (def != null) out += TintSource.Potion(def)
+                }
+                "minecraft:team" -> {
+                    val def = if ("default" in obj) parsePackedColor(obj["default"], itemPath, overrideIndex, issues) else -1
+                    if (def != null) out += TintSource.Team(def)
+                }
+                "minecraft:firework" -> {
+                    val def = if ("default" in obj) parsePackedColor(obj["default"], itemPath, overrideIndex, issues) else -7697782
+                    if (def != null) out += TintSource.Firework(def)
+                }
+                else -> {
+                    issues += Issue(
+                        level = IssueLevel.ERROR,
+                        item = itemPath,
+                        overrideIndex = overrideIndex,
+                        message = "Unknown 26.3 tint source type '$rawType'.",
+                        rule = MigrationRule.PM018,
+                        path = itemPath,
+                    )
+                }
+            }
+        }
+        return out
+    }
+
+    private fun parsePackedColor(
+        el: JsonElement?,
+        itemPath: String,
+        overrideIndex: Int?,
+        issues: MutableList<Issue>,
+    ): Int? {
+        if (el is JsonPrimitive) {
+            el.intOrNull?.let { return it }
+            val text = el.contentOrNull?.trim()
+            if (text != null && text.startsWith("#")) {
+                val hex = text.removePrefix("#")
+                if (hex.length == 6 && hex.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) {
+                    return hex.toInt(16)
+                }
+            }
+        } else if (el is JsonArray && el.size == 3) {
+            val rgb = el.mapNotNull { (it as? JsonPrimitive)?.doubleOrNull }
+            if (rgb.size == 3 && rgb.all { it in 0.0..1.0 }) {
+                val r = (rgb[0] * 255.0).toInt().coerceIn(0, 255)
+                val g = (rgb[1] * 255.0).toInt().coerceIn(0, 255)
+                val b = (rgb[2] * 255.0).toInt().coerceIn(0, 255)
+                return (r shl 16) or (g shl 8) or b
+            }
+        }
+        issues += Issue(
+            level = IssueLevel.ERROR,
+            item = itemPath,
+            overrideIndex = overrideIndex,
+            message = "Invalid packed RGB color '$el' in tint source; expected integer, '#RRGGBB', or normalized [r, g, b] in 0..1.",
+            rule = MigrationRule.PM018,
+            path = itemPath,
+        )
+        return null
     }
 
     /**
@@ -147,18 +276,61 @@ object ComponentOverrideCompiler {
                 continue
             }
 
+            val issuesBefore = issues.size
+            val tints = parseTints(item["tints"], itemPath, idx, issues)
+            val tintHadError = issues.size > issuesBefore && issues.subList(issuesBefore, issues.size).any { it.rule == MigrationRule.PM018 }
+            val compositeList = (item["models"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
             val targetModel = (item["model"] as? JsonPrimitive)?.contentOrNull
-            if (targetModel == null) {
-                issues += Issue(
-                    level = IssueLevel.ERROR,
-                    item = itemPath,
-                    overrideIndex = idx,
-                    message = "Component override entry at index $idx missing required 'model' field.",
-                    rule = MigrationRule.PM014,
-                    path = itemPath,
-                )
-                continue
+
+            val leafNode: ItemModelNode? = when {
+                compositeList != null && compositeList.isNotEmpty() -> {
+                    val invalid = compositeList.firstOrNull { !validateComponentId(it) }
+                    if (invalid != null) {
+                        issues += Issue(
+                            level = IssueLevel.ERROR,
+                            item = itemPath,
+                            overrideIndex = idx,
+                            message = "Composite item model entry '$invalid' at index $idx is not a valid resource identifier.",
+                            rule = MigrationRule.PM018,
+                            path = itemPath,
+                        )
+                        null
+                    } else {
+                        val layers = compositeList.mapIndexed { layerIdx, m ->
+                            ItemModelNode.Model(m, if (layerIdx == 0) tints else emptyList())
+                        }
+                        ItemModelNode.Composite(layers)
+                    }
+                }
+                targetModel != null -> {
+                    val normModel = if (!targetModel.contains(':')) "minecraft:$targetModel" else targetModel
+                    if (!validateComponentId(normModel)) {
+                        issues += Issue(
+                            level = IssueLevel.ERROR,
+                            item = itemPath,
+                            overrideIndex = idx,
+                            message = "Target item model '$targetModel' at index $idx is not a valid resource identifier.",
+                            rule = MigrationRule.PM018,
+                            path = itemPath,
+                        )
+                        null
+                    } else {
+                        ItemModelNode.Model(targetModel, tints)
+                    }
+                }
+                else -> {
+                    issues += Issue(
+                        level = IssueLevel.ERROR,
+                        item = itemPath,
+                        overrideIndex = idx,
+                        message = "Component override entry at index $idx missing required 'model' or 'models' field.",
+                        rule = MigrationRule.PM014,
+                        path = itemPath,
+                    )
+                    null
+                }
             }
+            if (leafNode == null || tintHadError) continue
 
             // Case A: has_component condition
             val hasComponent = (item["has_component"] as? JsonPrimitive)?.contentOrNull
@@ -188,31 +360,99 @@ object ComponentOverrideCompiler {
                 currentRoot = ItemModelNode.Condition(
                     property = "minecraft:has_component",
                     component = comp,
-                    onTrue = ItemModelNode.Model(targetModel),
+                    onTrue = leafNode,
                     onFalse = currentRoot,
                 )
                 continue
             }
 
-            // Case B: select on component property
-            val selectProperty = (item["property"] as? JsonPrimitive)?.contentOrNull
-            val whenVal = (item["when"] as? JsonPrimitive)?.contentOrNull
-            if (selectProperty != null && whenVal != null) {
-                currentRoot = ItemModelNode.Select(
-                    property = selectProperty,
-                    cases = listOf(ItemModelNode.Case(listOf(whenVal), ItemModelNode.Model(targetModel))),
-                    fallback = currentRoot,
+            // Case B: custom_model_data boolean flag condition (flags[flag_index])
+            val flagIndex = (item["flag_index"] as? JsonPrimitive)?.intOrNull
+            if (flagIndex != null) {
+                if (flagIndex < 0) {
+                    issues += Issue(
+                        level = IssueLevel.ERROR,
+                        item = itemPath,
+                        overrideIndex = idx,
+                        message = "custom_model_data flag_index ($flagIndex) at index $idx cannot be negative.",
+                        rule = MigrationRule.PM018,
+                        path = itemPath,
+                    )
+                    continue
+                }
+                currentRoot = ItemModelNode.Condition(
+                    property = "minecraft:custom_model_data",
+                    index = if (flagIndex == 0) null else flagIndex,
+                    onTrue = leafNode,
+                    onFalse = currentRoot,
                 )
                 continue
             }
 
-            // Case C: direct custom_model_data range entry
+            // Case C: select on component or custom_model_data string property
+            val selectProperty = (item["property"] as? JsonPrimitive)?.contentOrNull
+            val whenValues: List<String>? = when (val w = item["when"]) {
+                is JsonPrimitive -> w.contentOrNull?.let { listOf(it) }
+                is JsonArray -> w.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.takeIf { it.isNotEmpty() }
+                else -> null
+            }
+            if (selectProperty != null && whenValues != null) {
+                val normProp = if (!selectProperty.contains(':')) "minecraft:$selectProperty" else selectProperty
+                val selectIdx = (item["index"] as? JsonPrimitive)?.intOrNull
+                if (selectIdx != null && selectIdx < 0) {
+                    issues += Issue(
+                        level = IssueLevel.ERROR,
+                        item = itemPath,
+                        overrideIndex = idx,
+                        message = "Select index ($selectIdx) at index $idx cannot be negative.",
+                        rule = MigrationRule.PM018,
+                        path = itemPath,
+                    )
+                    continue
+                }
+                val compTarget = (item["component"] as? JsonPrimitive)?.contentOrNull?.let {
+                    if (!it.contains(':')) "minecraft:$it" else it
+                }
+                if (normProp == "minecraft:component" && (compTarget == null || !validateComponentId(compTarget))) {
+                    issues += Issue(
+                        level = IssueLevel.ERROR,
+                        item = itemPath,
+                        overrideIndex = idx,
+                        message = "Select on 'minecraft:component' at index $idx requires a valid 'component' identifier.",
+                        rule = MigrationRule.PM014,
+                        path = itemPath,
+                    )
+                    continue
+                }
+                currentRoot = ItemModelNode.Select(
+                    property = normProp,
+                    cases = listOf(ItemModelNode.Case(whenValues, leafNode)),
+                    fallback = currentRoot,
+                    index = selectIdx,
+                    component = compTarget,
+                )
+                continue
+            }
+
+            // Case D: direct custom_model_data range entry (floats[index])
             val cmd = (item["custom_model_data"] as? JsonPrimitive)?.doubleOrNull
             if (cmd != null) {
+                val floatIdx = (item["index"] as? JsonPrimitive)?.intOrNull ?: 0
+                if (floatIdx < 0) {
+                    issues += Issue(
+                        level = IssueLevel.ERROR,
+                        item = itemPath,
+                        overrideIndex = idx,
+                        message = "custom_model_data float index ($floatIdx) at index $idx cannot be negative.",
+                        rule = MigrationRule.PM018,
+                        path = itemPath,
+                    )
+                    continue
+                }
                 currentRoot = ItemModelNode.RangeDispatch(
                     property = "minecraft:custom_model_data",
-                    index = 0,
-                    entries = listOf(ItemModelNode.Entry(cmd, ItemModelNode.Model(targetModel))),
+                    index = floatIdx,
+                    entries = listOf(ItemModelNode.Entry(cmd, leafNode)),
                     fallback = currentRoot,
                 )
                 continue
@@ -234,11 +474,17 @@ object ComponentOverrideCompiler {
             return when (n) {
                 is ItemModelNode.Model -> n
 
+                is ItemModelNode.Composite -> {
+                    val flat = n.models.map { prune(it) }.flatMap { child ->
+                        if (child is ItemModelNode.Composite) child.models else listOf(child)
+                    }
+                    if (flat.size == 1) flat.single() else ItemModelNode.Composite(flat)
+                }
+
                 is ItemModelNode.Condition -> {
                     val trueBranch = prune(n.onTrue)
                     val falseBranch = prune(n.onFalse)
 
-                    // Tautology check: on_true == on_false
                     if (trueBranch == falseBranch) {
                         pruned++
                         issues += Issue(
@@ -269,7 +515,6 @@ object ComponentOverrideCompiler {
                     for (entry in sortedEntries) {
                         val optModel = prune(entry.model)
 
-                        // If lowest entry at 0.0 matches fallback, it is redundant
                         if (newEntries.isEmpty() && entry.threshold <= 0.0 && optimizedFallback != null && optModel == optimizedFallback) {
                             pruned++
                             issues += Issue(
@@ -283,7 +528,6 @@ object ComponentOverrideCompiler {
                             continue
                         }
 
-                        // Duplicate threshold check
                         if (newEntries.isNotEmpty() && newEntries.last().threshold == entry.threshold) {
                             pruned++
                             issues += Issue(
@@ -351,6 +595,8 @@ object ComponentOverrideCompiler {
                         cases = coalescedCases,
                         fallback = optimizedFallback,
                         blockStateProperty = n.blockStateProperty,
+                        index = n.index,
+                        component = n.component,
                     )
                 }
             }

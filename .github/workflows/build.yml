@@ -105,6 +105,25 @@ jobs:
           cat /tmp/again.txt
           diff -r /tmp/pack /tmp/pack-again
 
+      - name: v0.5.0 component codegen, predicate tree simplification, and dual-era bundle export work end-to-end
+        run: |
+          set -euo pipefail
+          set +e
+          java -jar build/libs/packmigrate.jar src/test/resources/legacypack \
+            --versions 1.21.6..26.3 \
+            --simplify-trees --codegen-components \
+            --component-manifest /tmp/components-263.json \
+            --bundle-export /tmp/bundle-v050 \
+            --sarif /tmp/v050.sarif --json > /tmp/v050-report.json
+          set -e
+          jq -e '.standaloneDefinitionCount >= 4 and .bundleManifest.modernSlice.maxFormat == "97.1"' /tmp/v050-report.json
+          jq -e '.runs[0].tool.driver.rules | length == 20' /tmp/v050.sarif
+          jq -e '.entryCount >= 4 and (.entries[0].giveCommand26_3 | startswith("/give @s "))' /tmp/components-263.json
+          test -f /tmp/bundle-v050/pack-legacy-1_20_1-1_21_3.zip
+          test -f /tmp/bundle-v050/pack-modern-1_21_4-26_3.zip
+          test -f /tmp/bundle-v050/pack-hybrid-universal.zip
+          test -f /tmp/bundle-v050/bundle-manifest.json
+
       - uses: actions/upload-artifact@v5
         if: always()
         with:

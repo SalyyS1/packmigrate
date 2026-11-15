@@ -122,4 +122,32 @@ enum class MigrationRule(
         shortDescription = "Minecraft 26.3 format 97 overlay specification drift",
         fullDescription = "A pack claiming Minecraft 26.3 format 97 compatibility contains format configuration drift between pack.mcmeta bounds and overlay directory assets.",
     ),
+    PM017(
+        id = "PM017",
+        ruleName = "OversizedGuiFormatFloor",
+        defaultLevel = IssueLevel.WARNING,
+        shortDescription = "26.3 item definition property emitted below supported format floor",
+        fullDescription = "An item model definition sets oversized_in_gui (requires 1.21.6 / format 63+) or swap_animation_scale (requires 26.x / format 84+) in a pack root targeting older versions without overlay isolation.",
+    ),
+    PM018(
+        id = "PM018",
+        ruleName = "InvalidTintOrComponentCodec",
+        defaultLevel = IssueLevel.ERROR,
+        shortDescription = "Invalid Minecraft 26.3 tint source or component codegen specification",
+        fullDescription = "A tint source, composite item model, or custom_model_data slot index uses a negative index, invalid color value, or unrecognized codec type.",
+    ),
+    PM019(
+        id = "PM019",
+        ruleName = "PredicateTreeSimplified",
+        defaultLevel = IssueLevel.NOTE,
+        shortDescription = "Legacy predicate decision tree algebraically simplified",
+        fullDescription = "Redundant range_dispatch step knots, path-dominated boolean/select cofactors, or nested composite wrappers were simplified without changing dispatch semantics.",
+    ),
+    PM020(
+        id = "PM020",
+        ruleName = "DualEraBundleIncompatibility",
+        defaultLevel = IssueLevel.WARNING,
+        shortDescription = "Modern-only item definition lacks legacy override counterpart in 1.20.1..1.21.3 bundle",
+        fullDescription = "A hand-authored 1.21.4..26.3 assets/<ns>/items/<item>.json definition has no corresponding legacy overrides in models/item/<item>.json, leaving pre-1.21.4 bundle clients with plain vanilla models.",
+    ),
 }

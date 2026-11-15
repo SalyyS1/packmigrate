@@ -5,7 +5,7 @@
 [![browser tool](https://img.shields.io/badge/browser_migrator-live_client--side-7c3aed?style=flat-square)](https://salyys1.github.io/packmigrate/)
 [![license](https://img.shields.io/github/license/SalyyS1/packmigrate?style=flat-square)](LICENSE)
 
-packmigrate converts a Minecraft resource pack's legacy `overrides` (from unpacked directories or `.zip` archives) into the item model definitions introduced in 1.21.4 and carried through Minecraft 26.3 (`pack_format` `97` / `[97, 1]`). Every `assets/<ns>/models/item/<item>.json` carrying an `overrides` list becomes an `assets/<ns>/items/<item>.json` decision tree that selects the exact same model for every item state, `pack.mcmeta` and `overlays.entries` are upgraded across format eras, and OASIS SARIF v2.1.0 diagnostics (`PM001` through `PM011`) pinpoint broken model references or predicate errors.
+packmigrate converts a Minecraft resource pack's legacy `overrides` (from unpacked directories or `.zip` archives) into the item model definitions introduced in 1.21.4 and carried through Minecraft 26.3 (`pack_format` `97` / `[97, 1]`). Every `assets/<ns>/models/item/<item>.json` carrying an `overrides` list becomes an `assets/<ns>/items/<item>.json` decision tree that selects the exact same model for every item state, `pack.mcmeta` and `overlays.entries` are upgraded across format eras, standalone `26.3` `minecraft:item_model` definitions and `/give` data component manifests can be generated automatically (`--codegen-components`, `--component-manifest`), legacy predicate trees can be algebraically simplified (`--simplify-trees`), multi-slice proxy bundles (`1.20.1..1.21.3` + `1.21.4..26.3` + `hybrid`) can be exported deterministically (`--bundle-export`), and OASIS SARIF v2.1.0 diagnostics (`PM001` through `PM020`) pinpoint broken model references or format floor mismatches.
 
 Try the zero-upload client-side browser migrator at [**salyys1.github.io/packmigrate**](https://salyys1.github.io/packmigrate/).
 
@@ -66,6 +66,9 @@ packmigrate legacy-pack.zip --zip migrated-pack.zip                           # 
 packmigrate legacy-pack.zip --versions 1.20.1..26.3 --zip out.zip             # hybrid pack serving 1.20.1 through 26.3
 packmigrate legacy-pack.zip --versions 1.20.1..26.3 --overlay-items v1_21_4 \
   --zip out.zip                                                               # isolate items/*.json inside an overlay
+packmigrate legacy-pack.zip --versions 1.21.6..26.3 --simplify-trees \
+  --codegen-components --component-manifest components-263.json \
+  --bundle-export dist/bundle                                                 # 26.3 codegen + dual-era proxy bundle
 packmigrate legacy-pack.zip --sarif packmigrate.sarif --json > report.json    # SARIF v2.1.0 + JSON CI output
 ```
 
@@ -78,11 +81,15 @@ packmigrate legacy-pack.zip --sarif packmigrate.sarif --json > report.json    # 
 | `--phash` | Enable 64-bit DCT-II perceptual image hash analysis for textures |
 | `--phash-threshold INT` | Perceptual hash Hamming distance threshold in 0..64 (default: 2) |
 | `--prune-overrides` | Prune redundant or unreachable override branches and fold tautological conditions |
-| `--component-overrides FILE` | JSON file with modern component override rules to compile into item definitions |
+| `--simplify-trees` | Algebraically simplify predicate decision trees (step-knot coalescing, Shannon cofactor folding, numeric interval narrowing, and composite flattening; `PM019`) |
+| `--codegen-components` | Generate standalone 26.3 `assets/<custom_ns>/items/<name>.json` direct `minecraft:item_model` definitions with automatic `oversized_in_gui` detection (`PM017`) |
+| `--component-manifest FILE` | Export a deterministic JSON manifest of 26.3 `minecraft:custom_model_data` (`floats`, `flags`, `strings`), `has_component` predicates, and `/give` commands |
+| `--component-overrides FILE` | JSON file with modern component override rules (`has_component`, `flag_index`, `minecraft:component`, `tints`, `models`) to compile into item definitions (`PM014`, `PM018`) |
+| `--bundle-export DIR` | Export deterministic `pack-legacy-1_20_1-1_21_3.zip`, `pack-modern-1_21_4-26_3.zip`, `pack-hybrid-universal.zip`, and `bundle-manifest.json` with SHA-1 digests (`PM020`) |
 | `--write` | Apply migration to `--out` or in place (for directories) |
 | `--out DIR` | Write the migrated pack directory to `DIR` without modifying the input |
 | `--zip FILE` | Write a byte-deterministic migrated `.zip` archive and print `resource-pack-sha1=<sha1>` |
-| `--sarif FILE` | Write an OASIS SARIF v2.1.0 diagnostic report (`PM001`..`PM016`) for GitHub Code Scanning |
+| `--sarif FILE` | Write an OASIS SARIF v2.1.0 diagnostic report (`PM001`..`PM020`) for GitHub Code Scanning |
 | `--strip-overrides` | Strip legacy `overrides` arrays from `models/item/*.json` (1.21.4+ ranges only) |
 | `--json` | Emit machine-readable JSON migration report to stdout |
 | `--force` | Overwrite an existing `--zip` file |
@@ -91,9 +98,9 @@ packmigrate legacy-pack.zip --sarif packmigrate.sarif --json > report.json    # 
 ### GitHub Action & Code Scanning
 
 ```yaml
-- uses: SalyyS1/packmigrate@v0.4.0
+- uses: SalyyS1/packmigrate@v0.5.0
   with:
-    args: legacy-pack.zip --versions 1.20.1..26.3 --zip build/server-pack.zip --strict
+    args: legacy-pack.zip --versions 1.21.6..26.3 --simplify-trees --codegen-components --bundle-export build/bundle --strict
     sarif: build/packmigrate.sarif
 
 - uses: github/codeql-action/upload-sarif@v3
@@ -122,6 +129,10 @@ packmigrate legacy-pack.zip --sarif packmigrate.sarif --json > report.json    # 
 | `PM014` | `error` | Malformed modern component predicate or item property |
 | `PM015` | `warning` | Unreachable or shadowed model override branch in decision tree |
 | `PM016` | `warning` | Minecraft 26.3 format 97 overlay specification drift |
+| `PM017` | `warning` | `oversized_in_gui` (1.21.6+ / format 63) or `swap_animation_scale` (26.1+ / format 84) emitted below format floor without overlay isolation |
+| `PM018` | `error` | Invalid 26.3 tint source, composite item layer, or negative `custom_model_data` slot index |
+| `PM019` | `note` | Legacy predicate decision tree algebraically simplified (step knots, Shannon cofactors, interval bounds, or composites) |
+| `PM020` | `warning` | Modern-only `assets/<ns>/items/<item>.json` lacks legacy `overrides` counterpart in `1.20.1..1.21.3` bundle slice |
 
 ## Complete 21-predicate mapping
 

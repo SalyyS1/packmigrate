@@ -12,7 +12,9 @@ import com.salyvn.packmigrate.dedup.DedupOptions
 import com.salyvn.packmigrate.legacy.LegacyItemModel
 import com.salyvn.packmigrate.legacy.LegacyParseException
 import com.salyvn.packmigrate.legacy.ModelId
+import com.salyvn.packmigrate.modern.ComponentCodegenManifest
 import com.salyvn.packmigrate.modern.ComponentOverrideCompiler
+import com.salyvn.packmigrate.modern.ItemComponentCodegen
 import com.salyvn.packmigrate.modern.ItemModelDefinition
 import kotlinx.serialization.json.JsonElement
 import java.nio.file.Files
@@ -33,6 +35,9 @@ data class MigrationPlan(
     val dedupedFiles: List<String> = emptyList(),
     val savedBytes: Long = 0L,
     val prunedEntries: Int = 0,
+    val simplifiedReductions: Int = 0,
+    val standaloneDefinitionCount: Int = 0,
+    val codegenManifest: ComponentCodegenManifest? = null,
 ) {
     val errors: Int get() = issues.count { it.level == IssueLevel.ERROR }
     val warnings: Int get() = issues.count { it.level == IssueLevel.WARNING }
@@ -64,7 +69,15 @@ class PackMigration(
 ) {
 
     fun plan(stripOverrides: Boolean): MigrationPlan {
-        return plan(stripOverrides, DedupOptions(), pruneOverrides = false, componentOverrides = null)
+        return plan(
+            stripOverrides = stripOverrides,
+            dedupOptions = DedupOptions(),
+            pruneOverrides = false,
+            componentOverrides = null,
+            simplifyTrees = false,
+            codegenComponents = false,
+            buildCodegenManifest = false,
+        )
     }
 
     fun plan(
@@ -72,6 +85,9 @@ class PackMigration(
         dedupOptions: DedupOptions = DedupOptions(),
         pruneOverrides: Boolean = false,
         componentOverrides: JsonElement? = null,
+        simplifyTrees: Boolean = false,
+        codegenComponents: Boolean = false,
+        buildCodegenManifest: Boolean = false,
     ): MigrationPlan {
         val issues = mutableListOf<Issue>()
 
@@ -156,6 +172,7 @@ class PackMigration(
         }
 
         var totalPruned = 0
+        var totalSimplified = 0
         val conversions = legacySources.mapNotNull { src ->
             val text = Files.readString(src.file)
             val legacy = try {
@@ -174,7 +191,7 @@ class PackMigration(
             if (!legacy.hasOverrides) return@mapNotNull null
             var conv = Converter.convert(legacy, sourceOverlay = src.sourceOverlay)
 
-            // Optional component override compilation & tree optimization (PM014, PM015)
+            // Optional component override compilation, tree optimization, and algebraic simplification (PM014, PM015, PM018, PM019)
             if (conv.definition != null) {
                 var currentModel = conv.definition.model
                 if (componentOverrides != null) {
@@ -195,7 +212,16 @@ class PackMigration(
                     issues += opt.issues
                 }
 
-                conv = conv.copy(definition = ItemModelDefinition(currentModel))
+                if (simplifyTrees) {
+                    val simp = PredicateTreeSimplifier.simplify(currentModel, conv.sourcePath, conv.item)
+                    currentModel = simp.root
+                    totalSimplified += simp.totalReductions
+                    issues += simp.issues
+                }
+
+                conv = conv.copy(
+                    definition = conv.definition.copy(model = currentModel),
+                )
             }
 
             conv
@@ -206,6 +232,8 @@ class PackMigration(
         checkCollisions(conversions, issues)
 
         val files = mutableListOf<PlannedFile>()
+        val plannedPaths = mutableSetOf<String>()
+
         conversions.forEach { conversion ->
             val definition = conversion.definition ?: return@forEach
             val id = ModelId.parse(conversion.item)
@@ -214,6 +242,10 @@ class PackMigration(
             val relative = if (targetPrefix != null) "$targetPrefix/$baseItemDef" else baseItemDef
             val target = root.resolve(relative)
             val rendered = definition.render()
+
+            val effectiveMin = if (targetPrefix != null) maxOf(minFormat, PackFormat(format1214)) else minFormat
+            ItemComponentCodegen.auditDefinitionFloor(definition, effectiveMin, conversion.item, relative, issues)
+
             if (target.exists() && Files.readString(target) != rendered) {
                 issues += Issue(
                     level = IssueLevel.WARNING,
@@ -225,6 +257,41 @@ class PackMigration(
                 )
             }
             files += PlannedFile(relative, rendered, overwrites = target.exists())
+            plannedPaths += relative
+        }
+
+        // Optional 26.3 standalone item_model definitions & component manifest synthesis (PM017, PM018)
+        var codegenManifest: ComponentCodegenManifest? = null
+        var standaloneCount = 0
+        if (codegenComponents || buildCodegenManifest) {
+            val codegen = ItemComponentCodegen.synthesize(
+                packRoot = root,
+                conversions = conversions,
+                minFormat = minFormat,
+                maxFormat = maxFormat,
+                overlayItemsDir = overlayItemsDir,
+                emitStandaloneDefinitions = codegenComponents,
+            )
+            issues += codegen.issues
+            codegenManifest = codegen.manifest
+            for (sf in codegen.standaloneFiles) {
+                if (sf.relative !in plannedPaths) {
+                    val existingTarget = root.resolve(sf.relative)
+                    if (existingTarget.exists() && Files.readString(existingTarget) != sf.text) {
+                        issues += Issue(
+                            level = IssueLevel.WARNING,
+                            item = sf.relative,
+                            overrideIndex = null,
+                            message = "${sf.relative} already exists with different content and would be overwritten by --codegen-components.",
+                            rule = MigrationRule.PM005,
+                            path = sf.relative,
+                        )
+                    }
+                    files += sf
+                    plannedPaths += sf.relative
+                    standaloneCount++
+                }
+            }
         }
 
         files += PlannedFile("pack.mcmeta", metaMigration.rendered, overwrites = metaFile.exists())
@@ -249,6 +316,9 @@ class PackMigration(
             dedupedFiles = dedupedList,
             savedBytes = dedupResult.savedBytes,
             prunedEntries = totalPruned,
+            simplifiedReductions = totalSimplified,
+            standaloneDefinitionCount = standaloneCount,
+            codegenManifest = codegenManifest,
         )
     }
 

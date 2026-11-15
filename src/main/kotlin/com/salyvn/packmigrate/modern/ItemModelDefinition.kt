@@ -3,21 +3,89 @@ package com.salyvn.packmigrate.modern
 import com.salyvn.packmigrate.core.Json
 
 /**
- * The 1.21.4+ item model definition tree, `assets/<ns>/items/<item>.json`.
+ * Tint source attached to a `minecraft:model` leaf in 1.21.4 through 26.3 item definitions.
+ */
+sealed class TintSource {
+    abstract fun toJson(): Json
+
+    data class Constant(val value: Int) : TintSource() {
+        override fun toJson(): Json = Json.Obj(
+            "type" to Json.Text("minecraft:constant"),
+            "value" to Json.Num(value),
+        )
+    }
+
+    data class Dye(val defaultColor: Int = -6265536) : TintSource() {
+        override fun toJson(): Json = Json.Obj(
+            "type" to Json.Text("minecraft:dye"),
+            "default" to Json.Num(defaultColor),
+        )
+    }
+
+    data class CustomModelData(val index: Int = 0, val defaultColor: Int = -1) : TintSource() {
+        override fun toJson(): Json = Json.Obj(
+            buildList {
+                add("type" to Json.Text("minecraft:custom_model_data"))
+                if (index != 0) add("index" to Json.Num(index))
+                add("default" to Json.Num(defaultColor))
+            },
+        )
+    }
+
+    data class Potion(val defaultColor: Int = -13083194) : TintSource() {
+        override fun toJson(): Json = Json.Obj(
+            "type" to Json.Text("minecraft:potion"),
+            "default" to Json.Num(defaultColor),
+        )
+    }
+
+    data class Team(val defaultColor: Int = -1) : TintSource() {
+        override fun toJson(): Json = Json.Obj(
+            "type" to Json.Text("minecraft:team"),
+            "default" to Json.Num(defaultColor),
+        )
+    }
+
+    data class Firework(val defaultColor: Int = -7697782) : TintSource() {
+        override fun toJson(): Json = Json.Obj(
+            "type" to Json.Text("minecraft:firework"),
+            "default" to Json.Num(defaultColor),
+        )
+    }
+}
+
+/**
+ * The 1.21.4 through 26.3+ item model definition tree, `assets/<ns>/items/<item>.json`.
  *
- * Only the node types a migration emits are modelled. Their fields were read from real vanilla files and
- * cross-checked against the client's codecs: a `range_dispatch` picks the entry with the largest
- * `threshold` that is `<=` the property's value (scaled by `scale`), and falls back when none is; a
- * `condition` chooses `on_true`/`on_false`; a `select` matches `cases[].when` against a string property.
+ * A `range_dispatch` picks the entry with the largest `threshold` that is `<=` the property's value
+ * (scaled by `scale`), and falls back when none is; a `condition` chooses `on_true`/`on_false`;
+ * a `select` matches `cases[].when` against a string or component property; and a `composite` layers
+ * multiple sub-models in order.
  */
 sealed class ItemModelNode {
     abstract fun toJson(): Json
 
-    /** `{"type": "minecraft:model", "model": "ns:item/foo"}` — a leaf. */
-    data class Model(val model: String) : ItemModelNode() {
+    /** `{"type": "minecraft:model", "model": "ns:item/foo", "tints": [...]}` - a leaf. */
+    data class Model(
+        val model: String,
+        val tints: List<TintSource> = emptyList(),
+    ) : ItemModelNode() {
         override fun toJson(): Json = Json.Obj(
-            "type" to Json.Text("minecraft:model"),
-            "model" to Json.Text(model),
+            buildList {
+                add("type" to Json.Text("minecraft:model"))
+                add("model" to Json.Text(model))
+                if (tints.isNotEmpty()) {
+                    add("tints" to Json.Arr(tints.map { it.toJson() }))
+                }
+            },
+        )
+    }
+
+    /** `{"type": "minecraft:composite", "models": [...]}` - multi-layer 1.21.4..26.3 composite model. */
+    data class Composite(val models: List<ItemModelNode>) : ItemModelNode() {
+        override fun toJson(): Json = Json.Obj(
+            "type" to Json.Text("minecraft:composite"),
+            "models" to Json.Arr(models.map { it.toJson() }),
         )
     }
 
@@ -27,10 +95,6 @@ sealed class ItemModelNode {
     /**
      * `range_dispatch` on a numeric property. For `minecraft:custom_model_data` the property reads
      * `floats[index]` of the item's component, which is where a legacy integer `CustomModelData` lands.
-     *
-     * The three property-specific fields are emitted only when set: `target` is required by
-     * `minecraft:compass` (`spawn`, `lodestone`, `recovery`, `none`), `period` belongs to
-     * `minecraft:use_cycle`, and `source` to `minecraft:time` (`daytime`, `moon_phase`, `random`).
      */
     data class RangeDispatch(
         val property: String,
@@ -64,8 +128,8 @@ sealed class ItemModelNode {
     }
 
     /**
-     * `condition` on a boolean property. `component` is the argument of `minecraft:has_component`
-     * (vanilla compass.json tests for `minecraft:lodestone_tracker`).
+     * `condition` on a boolean property. `component` is the argument of `minecraft:has_component`,
+     * and `index` selects `flags[index]` on `minecraft:custom_model_data`.
      */
     data class Condition(
         val property: String,
@@ -95,19 +159,23 @@ sealed class ItemModelNode {
     }
 
     /**
-     * `select` on a string property. `blockStateProperty` is only meaningful for `minecraft:block_state`,
-     * which reads that key out of the item's `block_state` component (light level, beehive honey level).
+     * `select` on a string or component property (`minecraft:custom_model_data` at `strings[index]`,
+     * `minecraft:component` matching `component`, `minecraft:block_state`, `minecraft:main_hand`, etc.).
      */
     data class Select(
         val property: String,
         val cases: List<Case>,
         val fallback: ItemModelNode?,
         val blockStateProperty: String? = null,
+        val index: Int? = null,
+        val component: String? = null,
     ) : ItemModelNode() {
         override fun toJson(): Json = Json.Obj(
             buildList {
                 add("type" to Json.Text("minecraft:select"))
                 add("property" to Json.Text(property))
+                index?.let { add("index" to Json.Num(it)) }
+                component?.let { add("component" to Json.Text(it)) }
                 blockStateProperty?.let { add("block_state_property" to Json.Text(it)) }
                 add("cases" to Json.Arr(cases.map { it.toJson() }))
                 fallback?.let { add("fallback" to it.toJson()) }
@@ -116,7 +184,21 @@ sealed class ItemModelNode {
     }
 }
 
-/** The file: one root node under `"model"`. */
-data class ItemModelDefinition(val model: ItemModelNode) {
-    fun render(): String = Json.Obj("model" to model.toJson()).render() + "\n"
+/**
+ * Top-level `assets/<ns>/items/<item>.json` file across Minecraft 1.21.4 through 26.3 (`format 97`).
+ */
+data class ItemModelDefinition(
+    val model: ItemModelNode,
+    val handAnimationOnSwap: Boolean? = null,
+    val oversizedInGui: Boolean? = null,
+    val swapAnimationScale: Double? = null,
+) {
+    fun render(): String = Json.Obj(
+        buildList {
+            handAnimationOnSwap?.let { add("hand_animation_on_swap" to Json.Bool(it)) }
+            oversizedInGui?.let { add("oversized_in_gui" to Json.Bool(it)) }
+            swapAnimationScale?.let { add("swap_animation_scale" to Json.Dec(it)) }
+            add("model" to model.toJson())
+        },
+    ).render() + "\n"
 }

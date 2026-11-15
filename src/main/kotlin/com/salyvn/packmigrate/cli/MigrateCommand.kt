@@ -9,6 +9,8 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.path
+import com.salyvn.packmigrate.bundle.BundleExportResult
+import com.salyvn.packmigrate.bundle.DualEraBundleExporter
 import com.salyvn.packmigrate.core.Format97OverlayGenerator
 import com.salyvn.packmigrate.core.PackFormats
 import com.salyvn.packmigrate.core.PackMeta
@@ -21,6 +23,7 @@ import com.salyvn.packmigrate.migrate.JsonMigrationReport
 import com.salyvn.packmigrate.migrate.MigrationPlan
 import com.salyvn.packmigrate.migrate.PackMigration
 import com.salyvn.packmigrate.migrate.SarifReport
+import com.salyvn.packmigrate.modern.ItemComponentCodegen
 import kotlinx.serialization.json.Json
 import java.io.IOException
 import java.nio.file.Files
@@ -64,6 +67,11 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
         help = "Write a byte-deterministic migrated .zip archive and print its resource-pack-sha1 digest",
     ).path()
 
+    private val bundleExport by option(
+        "--bundle-export",
+        help = "Export deterministic legacy (1.20.1..1.21.3), modern (1.21.4..26.3), and hybrid .zip slices plus bundle-manifest.json to this directory",
+    ).path()
+
     private val sarif by option(
         "--sarif",
         help = "Write an OASIS SARIF v2.1.0 migration diagnostic report to this file",
@@ -95,6 +103,21 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
         "--prune-overrides",
         help = "Prune redundant or unreachable override branches and fold tautological conditions",
     ).flag()
+
+    private val simplifyTrees by option(
+        "--simplify-trees",
+        help = "Algebraically simplify predicate decision trees (step-knot coalescing, path cofactor folding, and interval narrowing)",
+    ).flag()
+
+    private val codegenComponents by option(
+        "--codegen-components",
+        help = "Generate standalone 26.3 assets/<ns>/items/<name>.json direct item_model definitions for custom-namespaced models",
+    ).flag()
+
+    private val componentManifest by option(
+        "--component-manifest",
+        help = "Write a 26.3 data component and /give command dispatch manifest JSON to this path",
+    ).path()
 
     private val componentOverrides by option(
         "--component-overrides",
@@ -147,8 +170,8 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
 
         val applying = write || zip != null
         val isZipInput = pack.isRegularFile()
-        if (applying && isZipInput && out == null && zip == null) {
-            fail("$pack is a .zip archive; pass --zip <migrated.zip> or --out <dir> when applying --write.")
+        if (write && isZipInput && out == null && zip == null && bundleExport == null) {
+            fail("$pack is a .zip archive; pass --zip <migrated.zip>, --out <dir>, or --bundle-export <dir> when applying --write.")
         }
         val zipTarget = zip
         if (applying && zipTarget != null && zipTarget.exists() && !force) {
@@ -185,13 +208,34 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                 phashThreshold = phashThreshold,
             )
 
+            // Run bundle export first (before writeInPlace mutates workingInput) when requested
+            val bundleResult: BundleExportResult? = bundleExport?.let { bundleDir ->
+                DualEraBundleExporter.export(
+                    packRoot = workingInput,
+                    bundleOutDir = bundleDir,
+                    dedupOptions = dedupOptions,
+                    pruneOverrides = pruneOverrides,
+                    simplifyTrees = simplifyTrees,
+                    codegenComponents = codegenComponents,
+                    componentOverrides = parsedComponentOverrides,
+                )
+            }
+
             val migration = PackMigration(workingInput, min, max, overlayItemsDir = effectiveOverlayItems)
-            val plan = migration.plan(
+            var plan = migration.plan(
                 stripOverrides = stripOverrides,
                 dedupOptions = dedupOptions,
                 pruneOverrides = pruneOverrides,
                 componentOverrides = parsedComponentOverrides,
+                simplifyTrees = simplifyTrees,
+                codegenComponents = codegenComponents,
+                buildCodegenManifest = componentManifest != null,
             )
+
+            if (bundleResult != null && bundleResult.issues.isNotEmpty()) {
+                val combinedIssues = (plan.issues + bundleResult.issues).sortedBy { it.level.ordinal }
+                plan = plan.copy(issues = combinedIssues)
+            }
 
             var zipArtifact: ZipArtifact? = null
             val destinationDir: Path? = when {
@@ -211,8 +255,16 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                 }
             }
 
+            componentManifest?.let { manifestPath ->
+                val manifest = plan.codegenManifest
+                if (manifest != null) {
+                    manifestPath.toAbsolutePath().parent?.let { Files.createDirectories(it) }
+                    Files.writeString(manifestPath, ItemComponentCodegen.renderManifest(manifest))
+                }
+            }
+
             sarif?.let { sarifPath ->
-                sarifPath.parent?.let { Files.createDirectories(it) }
+                sarifPath.toAbsolutePath().parent?.let { Files.createDirectories(it) }
                 Files.writeString(sarifPath, SarifReport.render(plan))
             }
 
@@ -225,15 +277,17 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                         plan = plan,
                         minFormat = min,
                         maxFormat = max,
-                        applied = applying,
+                        applied = applying || bundleResult != null,
                         outputDir = reportedOutDir,
                         zipArtifact = zipArtifact,
                         overlayItemsDir = effectiveOverlayItems,
+                        componentManifestPath = componentManifest,
+                        bundleManifest = bundleResult?.manifest,
                     ),
                 )
             } else {
                 report(plan, effectiveOverlayItems)
-                if (applying) {
+                if (applying || bundleResult != null || componentManifest != null) {
                     echo("")
                     val strippedNote = if (plan.strippedOverrides.isNotEmpty()) {
                         " and stripped ${plan.strippedOverrides.size} override list(s)"
@@ -249,13 +303,28 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                     if (plan.prunedEntries > 0) {
                         echo("Pruned ${plan.prunedEntries} redundant/unreachable override branch(es)")
                     }
+                    if (plan.simplifiedReductions > 0) {
+                        echo("Simplified ${plan.simplifiedReductions} predicate tree node(s)")
+                    }
+                    if (plan.standaloneDefinitionCount > 0) {
+                        echo("Generated ${plan.standaloneDefinitionCount} standalone 26.3 item_model definition(s)")
+                    }
+                    if (componentManifest != null && plan.codegenManifest != null) {
+                        echo("Wrote 26.3 component manifest (${plan.codegenManifest.entryCount} entries) to $componentManifest")
+                    }
                     if (zipArtifact != null) {
                         echo("Zipped migrated pack to ${zipArtifact.path} (${zipArtifact.sizeBytes} bytes)")
                         echo("resource-pack-sha1=${zipArtifact.sha1}")
                     }
+                    if (bundleResult != null) {
+                        echo("Exported dual-era bundle to ${bundleResult.manifest.bundleDirectory}:")
+                        echo("   legacy  (${bundleResult.manifest.legacySlice.minecraftRange}): ${bundleResult.legacyZip.sha1}")
+                        echo("   modern  (${bundleResult.manifest.modernSlice.minecraftRange}): ${bundleResult.modernZip.sha1}")
+                        echo("   hybrid  (${bundleResult.manifest.hybridUniversalSlice.minecraftRange}): ${bundleResult.hybridZip.sha1}")
+                    }
                 } else if (plan.itemsMigrated > 0) {
                     echo("")
-                    echo("Nothing written. Pass --write to apply, --write --out <dir>, or --zip <migrated.zip>.")
+                    echo("Nothing written. Pass --write to apply, --write --out <dir>, --zip <migrated.zip>, or --bundle-export <dir>.")
                 }
             }
 
@@ -290,6 +359,12 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
         }
         if (plan.prunedEntries > 0) {
             echo("   ${plan.prunedEntries} redundant/unreachable override branch(es) pruned")
+        }
+        if (plan.simplifiedReductions > 0) {
+            echo("   ${plan.simplifiedReductions} predicate tree reduction(s) applied")
+        }
+        if (plan.standaloneDefinitionCount > 0) {
+            echo("   ${plan.standaloneDefinitionCount} standalone 26.3 item_model definition(s) synthesized")
         }
 
         if (plan.issues.isNotEmpty()) {

@@ -1,5 +1,6 @@
 package com.salyvn.packmigrate.migrate
 
+import com.salyvn.packmigrate.bundle.DualEraBundleManifest
 import com.salyvn.packmigrate.core.PackFormat
 import com.salyvn.packmigrate.core.ZipArtifact
 import kotlinx.serialization.Serializable
@@ -42,6 +43,10 @@ data class MigrationReportPayload(
     val dedupedFileCount: Int = 0,
     val savedBytes: Long = 0L,
     val prunedOverrideCount: Int = 0,
+    val simplifiedReductionCount: Int = 0,
+    val standaloneDefinitionCount: Int = 0,
+    val componentManifestPath: String? = null,
+    val bundleManifest: DualEraBundleManifest? = null,
     val errorCount: Int,
     val warningCount: Int,
     val noteCount: Int,
@@ -65,6 +70,8 @@ object JsonMigrationReport {
         outputDir: Path?,
         zipArtifact: ZipArtifact?,
         overlayItemsDir: String? = null,
+        componentManifestPath: Path? = null,
+        bundleManifest: DualEraBundleManifest? = null,
     ): String {
         val payload = MigrationReportPayload(
             pack = pack.toString(),
@@ -82,6 +89,10 @@ object JsonMigrationReport {
             dedupedFileCount = plan.dedupedFiles.size,
             savedBytes = plan.savedBytes,
             prunedOverrideCount = plan.prunedEntries,
+            simplifiedReductionCount = plan.simplifiedReductions,
+            standaloneDefinitionCount = plan.standaloneDefinitionCount,
+            componentManifestPath = componentManifestPath?.toString(),
+            bundleManifest = bundleManifest,
             errorCount = plan.errors,
             warningCount = plan.warnings,
             noteCount = plan.issues.count { it.level == IssueLevel.NOTE },
