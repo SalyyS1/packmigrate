@@ -14,9 +14,9 @@ inputs:
     required: false
     default: ''
   version:
-    description: 'Packmigrate release tag to download (defaults to v0.3.0)'
+    description: 'Packmigrate release tag to download (defaults to v0.4.0)'
     required: false
-    default: 'v0.3.0'
+    default: 'v0.4.0'
 
 outputs:
   sarif-file:

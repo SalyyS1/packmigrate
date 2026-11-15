@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>packmigrate v0.3.0 | Client-Side Minecraft 1.21.4 to 26.3 Resource Pack Migrator</title>
+  <title>packmigrate v0.4.0 | Client-Side Minecraft 1.21.4 to 26.3 Resource Pack Migrator</title>
   <meta name="description" content="Zero-upload browser resource pack migrator: convert legacy CustomModelData overrides into Minecraft 1.21.4 through 26.3 (format 97) item model definitions, upgrade pack.mcmeta overlays, and export SARIF v2.1.0." />
   <style>
     :root {
@@ -332,7 +332,7 @@
   <div class="wrap">
     <header>
       <div class="brand">
-        <h1>packmigrate <span class="badge">v0.3.0</span> <span class="badge">MC 1.20 .. 26.3 (format 97)</span></h1>
+        <h1>packmigrate <span class="badge">v0.4.0</span> <span class="badge">MC 1.20 .. 26.3 (format 97)</span></h1>
         <p>Zero-upload client-side Minecraft resource pack migrator. Converts legacy <code>models/item/*.json</code> <code>overrides</code> into exact 1.21.4+ <code>assets/&lt;ns&gt;/items/*.json</code> decision trees, upgrades <code>pack.mcmeta</code> and <code>overlays.entries</code> up to 26.3, and exports OASIS SARIF v2.1.0.</p>
       </div>
       <div class="nav-links">
@@ -402,7 +402,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="trees">Migrated items/*.json Trees</button>
       <button class="tab" data-tab="mcmeta">pack.mcmeta &amp; Overlays</button>
-      <button class="tab" data-tab="diagnostics">Diagnostics &amp; SARIF (PM001..PM011)</button>
+      <button class="tab" data-tab="diagnostics">Diagnostics &amp; SARIF (PM001..PM016)</button>
       <button class="tab" data-tab="sandbox">Live Single-Model JSON Sandbox</button>
     </div>
 
@@ -472,7 +472,7 @@
     </div>
 
     <footer>
-      <div>packmigrate v0.3.0 by <a href="https://github.com/SalyyS1">Salyvn (SalyyS1)</a>. Zero telemetry, Apache-2.0 License.</div>
+      <div>packmigrate v0.4.0 by <a href="https://github.com/SalyyS1">Salyvn (SalyyS1)</a>. Zero telemetry, Apache-2.0 License.</div>
       <div>Companion tools: <a href="https://salyys1.github.io/packmerge/">packmerge</a> &middot; <a href="https://salyys1.github.io/glyphsmith/">glyphsmith</a> &middot; <a href="https://salyys1.github.io/shadersmith/">shadersmith</a> &middot; <a href="https://salyys1.github.io/foliascan/">foliascan</a></div>
     </footer>
   </div>
@@ -540,7 +540,12 @@
     { id: "PM008", name: "InvalidOverlayDirectory", level: "error", short: "Invalid overlays.entries directory or format bounds in pack.mcmeta" },
     { id: "PM009", name: "MissingOverlayDirectory", level: "warning", short: "Referenced overlay directory is missing from pack" },
     { id: "PM010", name: "OverlayFormatEraMigrated", level: "note", short: "Legacy overlay formats upgraded for 1.21.9 through 26.3 compatibility" },
-    { id: "PM011", name: "NonIntegerOrNegativeCustomModelData", level: "warning", short: "Fractional or negative custom_model_data threshold" }
+    { id: "PM011", name: "NonIntegerOrNegativeCustomModelData", level: "warning", short: "Fractional or negative custom_model_data threshold" },
+    { id: "PM012", name: "RedundantOverlayAsset", level: "warning", short: "Redundant overlay asset duplicates base pack asset" },
+    { id: "PM013", name: "DuplicateAssetTexture", level: "note", short: "Duplicate or perceptually identical texture across asset paths" },
+    { id: "PM014", name: "ComponentPredicateMalformed", level: "error", short: "Malformed modern component predicate or item property" },
+    { id: "PM015", name: "UnreachableFallbackBranch", level: "warning", short: "Unreachable or shadowed model override branch in decision tree" },
+    { id: "PM016", name: "Format97OverlayDrift", level: "warning", short: "Minecraft 26.3 format 97 overlay specification drift" }
   ];
 
   const PRESETS = {
@@ -1120,6 +1125,30 @@
         const val = key.split("::")[1];
         issues.push({ ruleId: "PM006", level: "note", path: list[0].sourcePath, message: `custom_model_data ${val} is used by ${list.length} items: ${list.map(x => x.item).join(", ")}.` });
       }
+    }
+
+    for (const od of existingOverlayDirs) {
+      for (const p of allPaths) {
+        if (p.startsWith(od + "/assets/")) {
+          const baseRel = p.slice(od.length + 1);
+          if (allPaths.includes(baseRel)) {
+            issues.push({
+              ruleId: "PM012",
+              level: "warning",
+              path: p,
+              message: `Overlay asset '${p}' duplicates base pack file '${baseRel}'; Minecraft overlays automatically inherit base assets, so this file is redundant.`
+            });
+          }
+        }
+      }
+    }
+    if (range.max.major >= 97 && range.min.major < 65 && !existingOverlayDirs.includes("format_97") && overlayItemsDir !== "format_97") {
+      issues.push({
+        ruleId: "PM016",
+        level: "note",
+        path: "pack.mcmeta",
+        message: "Pack targets dual-era range containing Minecraft 26.3 (format 97). Consider using an isolated format_97 overlay for modern definitions."
+      });
     }
 
     const plannedFiles = new Map();

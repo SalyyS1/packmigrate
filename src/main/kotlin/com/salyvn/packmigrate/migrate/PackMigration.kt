@@ -1,14 +1,20 @@
 package com.salyvn.packmigrate.migrate
 
+import com.salyvn.packmigrate.core.Format97OverlayGenerator
 import com.salyvn.packmigrate.core.OverlayEntrySpec
 import com.salyvn.packmigrate.core.PackFormat
 import com.salyvn.packmigrate.core.PackFormats
 import com.salyvn.packmigrate.core.PackMeta
 import com.salyvn.packmigrate.core.PackMetaFindingKind
 import com.salyvn.packmigrate.core.VanillaModels
+import com.salyvn.packmigrate.dedup.AssetDeduplicator
+import com.salyvn.packmigrate.dedup.DedupOptions
 import com.salyvn.packmigrate.legacy.LegacyItemModel
 import com.salyvn.packmigrate.legacy.LegacyParseException
 import com.salyvn.packmigrate.legacy.ModelId
+import com.salyvn.packmigrate.modern.ComponentOverrideCompiler
+import com.salyvn.packmigrate.modern.ItemModelDefinition
+import kotlinx.serialization.json.JsonElement
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.exists
@@ -24,6 +30,9 @@ data class MigrationPlan(
     val files: List<PlannedFile>,
     val issues: List<Issue>,
     val strippedOverrides: List<PlannedFile>,
+    val dedupedFiles: List<String> = emptyList(),
+    val savedBytes: Long = 0L,
+    val prunedEntries: Int = 0,
 ) {
     val errors: Int get() = issues.count { it.level == IssueLevel.ERROR }
     val warnings: Int get() = issues.count { it.level == IssueLevel.WARNING }
@@ -55,12 +64,25 @@ class PackMigration(
 ) {
 
     fun plan(stripOverrides: Boolean): MigrationPlan {
+        return plan(stripOverrides, DedupOptions(), pruneOverrides = false, componentOverrides = null)
+    }
+
+    fun plan(
+        stripOverrides: Boolean,
+        dedupOptions: DedupOptions = DedupOptions(),
+        pruneOverrides: Boolean = false,
+        componentOverrides: JsonElement? = null,
+    ): MigrationPlan {
         val issues = mutableListOf<Issue>()
 
         val format1214 = PackFormats.formatOf("1.21.4")
         val extraOverlay = overlayItemsDir?.let { dir ->
-            val oMin = if (minFormat.major > format1214) minFormat else PackFormat(format1214)
-            OverlayEntrySpec(directory = dir, min = oMin, max = maxFormat)
+            if (dir == Format97OverlayGenerator.FORMAT_97_DIR) {
+                Format97OverlayGenerator.createSpec(dir)
+            } else {
+                val oMin = if (minFormat.major > format1214) minFormat else PackFormat(format1214)
+                OverlayEntrySpec(directory = dir, min = oMin, max = maxFormat)
+            }
         }
 
         val metaFile = root.resolve("pack.mcmeta")
@@ -112,6 +134,20 @@ class PackMigration(
             present
         }
 
+        // Minecraft 26.3 format 97 overlay audit (PM016)
+        val overlaySpecs = existingOverlayDirs.map { dir ->
+            if (dir == Format97OverlayGenerator.FORMAT_97_DIR) {
+                Format97OverlayGenerator.createSpec(dir)
+            } else {
+                OverlayEntrySpec(dir, minFormat, maxFormat)
+            }
+        }
+        issues += Format97OverlayGenerator.auditFormat97(minFormat, maxFormat, overlaySpecs)
+
+        // Dual-era asset deduplication & perceptual hash audit (PM012, PM013)
+        val dedupResult = AssetDeduplicator.analyze(root, existingOverlayDirs, dedupOptions)
+        issues += dedupResult.issues
+
         val legacySources = buildList {
             addAll(findLegacyItemModels(root, sourceOverlay = null))
             existingOverlayDirs.forEach { overlayDir ->
@@ -119,6 +155,7 @@ class PackMigration(
             }
         }
 
+        var totalPruned = 0
         val conversions = legacySources.mapNotNull { src ->
             val text = Files.readString(src.file)
             val legacy = try {
@@ -135,7 +172,33 @@ class PackMigration(
                 return@mapNotNull null
             }
             if (!legacy.hasOverrides) return@mapNotNull null
-            Converter.convert(legacy, sourceOverlay = src.sourceOverlay)
+            var conv = Converter.convert(legacy, sourceOverlay = src.sourceOverlay)
+
+            // Optional component override compilation & tree optimization (PM014, PM015)
+            if (conv.definition != null) {
+                var currentModel = conv.definition.model
+                if (componentOverrides != null) {
+                    val compIssues = mutableListOf<Issue>()
+                    currentModel = ComponentOverrideCompiler.compileComponentOverrides(
+                        componentOverrides,
+                        currentModel,
+                        conv.sourcePath,
+                        compIssues,
+                    )
+                    issues += compIssues
+                }
+
+                if (pruneOverrides) {
+                    val opt = ComponentOverrideCompiler.optimizeTree(currentModel, conv.sourcePath)
+                    currentModel = opt.root
+                    totalPruned += opt.prunedBranches
+                    issues += opt.issues
+                }
+
+                conv = conv.copy(definition = ItemModelDefinition(currentModel))
+            }
+
+            conv
         }
         conversions.forEach { issues += it.issues }
 
@@ -176,7 +239,17 @@ class PackMigration(
             emptyList()
         }
 
-        return MigrationPlan(conversions, files, issues.sortedBy { it.level.ordinal }, stripped)
+        val dedupedList = if (dedupOptions.enableDedup) dedupResult.redundantOverlayFiles else emptyList()
+
+        return MigrationPlan(
+            conversions = conversions,
+            files = files,
+            issues = issues.sortedBy { it.level.ordinal },
+            strippedOverrides = stripped,
+            dedupedFiles = dedupedList,
+            savedBytes = dedupResult.savedBytes,
+            prunedEntries = totalPruned,
+        )
     }
 
     fun apply(plan: MigrationPlan, destination: Path) {
@@ -184,6 +257,15 @@ class PackMigration(
             val target = destination.resolve(planned.relative)
             Files.createDirectories(target.parent)
             Files.writeString(target, planned.text)
+        }
+
+        if (plan.dedupedFiles.isNotEmpty()) {
+            plan.dedupedFiles.forEach { rel ->
+                val target = destination.resolve(rel)
+                if (target.exists() && target.isRegularFile()) {
+                    Files.delete(target)
+                }
+            }
         }
     }
 

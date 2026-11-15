@@ -73,10 +73,16 @@ packmigrate legacy-pack.zip --sarif packmigrate.sarif --json > report.json    # 
 |---|---|
 | `--versions RANGE` | Version range for `pack.mcmeta` (default `1.21.4..26.3`; supports `1.20.1..26.3`, `26.1..[97,1]`, or `97.1`) |
 | `--overlay-items DIR` | Isolate generated `assets/<ns>/items/*.json` inside `<DIR>/` and register `<DIR>` in `pack.mcmeta` `overlays.entries` |
+| `--overlay-format-97` | Generate an isolated format_97 overlay for Minecraft 26.3 definitions |
+| `--dedup` | Prune redundant overlay assets that duplicate base pack assets and report duplicate textures |
+| `--phash` | Enable 64-bit DCT-II perceptual image hash analysis for textures |
+| `--phash-threshold INT` | Perceptual hash Hamming distance threshold in 0..64 (default: 2) |
+| `--prune-overrides` | Prune redundant or unreachable override branches and fold tautological conditions |
+| `--component-overrides FILE` | JSON file with modern component override rules to compile into item definitions |
 | `--write` | Apply migration to `--out` or in place (for directories) |
 | `--out DIR` | Write the migrated pack directory to `DIR` without modifying the input |
 | `--zip FILE` | Write a byte-deterministic migrated `.zip` archive and print `resource-pack-sha1=<sha1>` |
-| `--sarif FILE` | Write an OASIS SARIF v2.1.0 diagnostic report (`PM001`..`PM011`) for GitHub Code Scanning |
+| `--sarif FILE` | Write an OASIS SARIF v2.1.0 diagnostic report (`PM001`..`PM016`) for GitHub Code Scanning |
 | `--strip-overrides` | Strip legacy `overrides` arrays from `models/item/*.json` (1.21.4+ ranges only) |
 | `--json` | Emit machine-readable JSON migration report to stdout |
 | `--force` | Overwrite an existing `--zip` file |
@@ -85,7 +91,7 @@ packmigrate legacy-pack.zip --sarif packmigrate.sarif --json > report.json    # 
 ### GitHub Action & Code Scanning
 
 ```yaml
-- uses: SalyyS1/packmigrate@v0.3.0
+- uses: SalyyS1/packmigrate@v0.4.0
   with:
     args: legacy-pack.zip --versions 1.20.1..26.3 --zip build/server-pack.zip --strict
     sarif: build/packmigrate.sarif
@@ -111,6 +117,11 @@ packmigrate legacy-pack.zip --sarif packmigrate.sarif --json > report.json    # 
 | `PM009` | `warning` | `overlays.entries` references a directory missing from the pack |
 | `PM010` | `note` | Legacy `overlays.entries` `formats` range upgraded with `min_format` and `max_format` for 1.21.9..26.3 |
 | `PM011` | `warning` | Fractional or negative `custom_model_data` threshold that diverges from integer `floats[0]` conversion |
+| `PM012` | `warning` | Redundant overlay asset duplicates base pack asset |
+| `PM013` | `note` | Duplicate or perceptually identical texture across asset paths |
+| `PM014` | `error` | Malformed modern component predicate or item property |
+| `PM015` | `warning` | Unreachable or shadowed model override branch in decision tree |
+| `PM016` | `warning` | Minecraft 26.3 format 97 overlay specification drift |
 
 ## Complete 21-predicate mapping
 

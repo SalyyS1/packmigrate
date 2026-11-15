@@ -4,19 +4,24 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.Context
 import com.github.ajalt.clikt.core.ProgramResult
 import com.github.ajalt.clikt.parameters.arguments.argument
+import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
+import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.path
+import com.salyvn.packmigrate.core.Format97OverlayGenerator
 import com.salyvn.packmigrate.core.PackFormats
 import com.salyvn.packmigrate.core.PackMeta
 import com.salyvn.packmigrate.core.PackMetaException
 import com.salyvn.packmigrate.core.ZipArtifact
 import com.salyvn.packmigrate.core.ZipPacks
+import com.salyvn.packmigrate.dedup.DedupOptions
 import com.salyvn.packmigrate.migrate.IssueLevel
 import com.salyvn.packmigrate.migrate.JsonMigrationReport
 import com.salyvn.packmigrate.migrate.MigrationPlan
 import com.salyvn.packmigrate.migrate.PackMigration
 import com.salyvn.packmigrate.migrate.SarifReport
+import kotlinx.serialization.json.Json
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -45,6 +50,11 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
         help = "Write migrated items/*.json into <dir>/assets/<ns>/items/ and register <dir> in pack.mcmeta overlays.entries",
     )
 
+    private val overlayFormat97 by option(
+        "--overlay-format-97",
+        help = "Generate an isolated format_97 overlay for Minecraft 26.3 definitions",
+    ).flag()
+
     private val write by option("--write", help = "Apply migration instead of only printing the plan").flag()
 
     private val out by option("--out", help = "Write migrated pack directory to this path instead of in place").path()
@@ -65,6 +75,31 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
         "--strip-overrides",
         help = "Also remove the overrides list from each legacy model file (1.21.4+ only)",
     ).flag()
+
+    private val dedup by option(
+        "--dedup",
+        help = "Prune redundant overlay assets that duplicate base pack assets and report duplicate textures",
+    ).flag()
+
+    private val phash by option(
+        "--phash",
+        help = "Enable 64-bit DCT-II perceptual image hash analysis for textures",
+    ).flag()
+
+    private val phashThreshold by option(
+        "--phash-threshold",
+        help = "Perceptual hash Hamming distance threshold in 0..64 (default: 2)",
+    ).int().default(2)
+
+    private val pruneOverrides by option(
+        "--prune-overrides",
+        help = "Prune redundant or unreachable override branches and fold tautological conditions",
+    ).flag()
+
+    private val componentOverrides by option(
+        "--component-overrides",
+        help = "JSON file with modern component override rules to compile into item definitions",
+    ).path(mustExist = true)
 
     private val strict by option("--strict", help = "Exit 1 on warnings too").flag()
 
@@ -97,7 +132,14 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                     "because pre-1.21.4 clients still read legacy overrides. Drop --strip-overrides for a hybrid pack.",
             )
         }
-        overlayItems?.let { dir ->
+
+        val effectiveOverlayItems = if (overlayFormat97) {
+            Format97OverlayGenerator.FORMAT_97_DIR
+        } else {
+            overlayItems
+        }
+
+        effectiveOverlayItems?.let { dir ->
             if (!PackMeta.isValidOverlayDirectory(dir)) {
                 fail("--overlay-items '$dir' is invalid; Minecraft requires lowercase [a-z0-9_-]+ with no path separators or dots.")
             }
@@ -129,8 +171,27 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                 pack
             }
 
-            val migration = PackMigration(workingInput, min, max, overlayItemsDir = overlayItems)
-            val plan = migration.plan(stripOverrides)
+            val parsedComponentOverrides = componentOverrides?.let { path ->
+                try {
+                    Json.parseToJsonElement(Files.readString(path))
+                } catch (e: Exception) {
+                    fail("Failed to parse component overrides JSON from $path: ${e.message}")
+                }
+            }
+
+            val dedupOptions = DedupOptions(
+                enableDedup = dedup,
+                enablePhash = phash || dedup,
+                phashThreshold = phashThreshold,
+            )
+
+            val migration = PackMigration(workingInput, min, max, overlayItemsDir = effectiveOverlayItems)
+            val plan = migration.plan(
+                stripOverrides = stripOverrides,
+                dedupOptions = dedupOptions,
+                pruneOverrides = pruneOverrides,
+                componentOverrides = parsedComponentOverrides,
+            )
 
             var zipArtifact: ZipArtifact? = null
             val destinationDir: Path? = when {
@@ -167,11 +228,11 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                         applied = applying,
                         outputDir = reportedOutDir,
                         zipArtifact = zipArtifact,
-                        overlayItemsDir = overlayItems,
+                        overlayItemsDir = effectiveOverlayItems,
                     ),
                 )
             } else {
-                report(plan)
+                report(plan, effectiveOverlayItems)
                 if (applying) {
                     echo("")
                     val strippedNote = if (plan.strippedOverrides.isNotEmpty()) {
@@ -181,6 +242,12 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
                     }
                     if (reportedOutDir != null) {
                         echo("Wrote ${plan.files.size} file(s)$strippedNote to $reportedOutDir")
+                    }
+                    if (plan.dedupedFiles.isNotEmpty()) {
+                        echo("Pruned ${plan.dedupedFiles.size} redundant overlay asset(s) (saved ${plan.savedBytes} bytes)")
+                    }
+                    if (plan.prunedEntries > 0) {
+                        echo("Pruned ${plan.prunedEntries} redundant/unreachable override branch(es)")
                     }
                     if (zipArtifact != null) {
                         echo("Zipped migrated pack to ${zipArtifact.path} (${zipArtifact.sizeBytes} bytes)")
@@ -199,7 +266,7 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
         }
     }
 
-    private fun report(plan: MigrationPlan) {
+    private fun report(plan: MigrationPlan, overlayDir: String?) {
         echo("== ${pack.fileName}: ${plan.itemsMigrated} item(s) with overrides")
         plan.conversions.filter { it.definition != null }.forEach { conversion ->
             val values = conversion.customModelDataValues.sorted()
@@ -212,11 +279,17 @@ class MigrateCommand : CliktCommand(name = "packmigrate") {
             echo("   ${label.padEnd(40)} $summary")
         }
         val toWrite = plan.files.filter { it.relative != "pack.mcmeta" }
-        val targetFolder = overlayItems?.let { "$it/assets/<ns>/items/" } ?: "assets/<ns>/items/"
+        val targetFolder = overlayDir?.let { "$it/assets/<ns>/items/" } ?: "assets/<ns>/items/"
         echo("")
         echo("   ${toWrite.size} definition(s) under $targetFolder, plus pack.mcmeta")
         if (plan.strippedOverrides.isNotEmpty()) {
             echo("   ${plan.strippedOverrides.size} legacy file(s) would lose their overrides list")
+        }
+        if (plan.dedupedFiles.isNotEmpty()) {
+            echo("   ${plan.dedupedFiles.size} redundant overlay asset(s) to prune (saving ${plan.savedBytes} bytes)")
+        }
+        if (plan.prunedEntries > 0) {
+            echo("   ${plan.prunedEntries} redundant/unreachable override branch(es) pruned")
         }
 
         if (plan.issues.isNotEmpty()) {
